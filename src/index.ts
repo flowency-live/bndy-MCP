@@ -1,0 +1,1003 @@
+#!/usr/bin/env node
+
+// BNDY MCP Server - AI-Driven Event Creation
+// Connects Claude Desktop to BNDY AWS Lambda infrastructure
+
+import { Server } from '@modelcontextprotocol/sdk/server/index.js';
+import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
+import {
+  CallToolRequestSchema,
+  ListToolsRequestSchema,
+} from '@modelcontextprotocol/sdk/types.js';
+import { searchVenue } from './tools/search-venue.js';
+import { createVenue } from './tools/create-venue.js';
+import { searchArtist } from './tools/search-artist.js';
+import { createArtist } from './tools/create-artist.js';
+import { createEvent } from './tools/create-event.js';
+import { editArtist } from './tools/edit-artist.js';
+import { listArtists } from './tools/list-artists.js';
+import { listVenues } from './tools/list-venues.js';
+import { editVenue } from './tools/edit-venue.js';
+import { editEvent } from './tools/edit-event.js';
+import { searchEvent } from './tools/search-event.js';
+import { uploadEventPoster } from './tools/upload-event-poster.js';
+import { bulkImport } from './tools/bulk-import.js';
+import { getByExternalId } from './tools/get-by-external-id.js';
+import { getById } from './tools/get-by-id.js';
+import { deleteEvent } from './tools/delete-event.js';
+
+// Initialize MCP server
+const server = new Server(
+  {
+    name: 'bndy-events',
+    version: '1.0.0',
+  },
+  {
+    capabilities: {
+      tools: {},
+    },
+  }
+);
+
+// Define available tools
+server.setRequestHandler(ListToolsRequestSchema, async () => ({
+  tools: [
+    {
+      name: 'search_venue',
+      description: 'Search for existing venues in BNDY database by name and city. Use this BEFORE creating a new venue to avoid duplicates. Confidence = (1 - levenshtein_distance/max_length) * 100. Thresholds: ≥90 high, ≥70 medium, <70 low.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          name: {
+            type: 'string',
+            description: 'Venue name (e.g., "Murphys", "The Prince of Wales")',
+          },
+          city: {
+            type: 'string',
+            description: 'City where venue is located (e.g., "Bury", "Congleton")',
+          },
+        },
+        required: ['name', 'city'],
+      },
+    },
+    {
+      name: 'create_venue',
+      description: 'Find or create a venue in BNDY. Automatically enriches with Google Places data and deduplicates via Place ID match. Returns existing venueId if matched, otherwise creates new. Safe to call without pre-checking via search_venue.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          name: {
+            type: 'string',
+            description: 'Official venue name',
+          },
+          address: {
+            type: 'string',
+            description: 'Full address including city and postcode',
+          },
+          city: {
+            type: 'string',
+            description: 'City name',
+          },
+          googlePlaceId: {
+            type: 'string',
+            description: 'Google Place ID (optional but strongly recommended for accuracy)',
+          },
+          latitude: {
+            type: 'number',
+            description: 'Latitude coordinate (optional)',
+          },
+          longitude: {
+            type: 'number',
+            description: 'Longitude coordinate (optional)',
+          },
+          facebookUrl: {
+            type: 'string',
+            description: 'Facebook page URL (optional - e.g., "https://www.facebook.com/venuename")',
+          },
+          externalIds: {
+            type: 'array',
+            items: {
+              type: 'object',
+              properties: {
+                source: { type: 'string', description: 'External system name (e.g., "onthecasemusic", "songkick")' },
+                id: { type: 'string', description: 'ID in the external system' },
+              },
+              required: ['source', 'id'],
+            },
+            description: 'External system references for cross-referencing (optional)',
+          },
+        },
+        required: ['name', 'address', 'city'],
+      },
+    },
+    {
+      name: 'search_artist',
+      description: 'Search for existing artists in BNDY database by name. Pre-filters by name similarity, then scores by Levenshtein distance. Confidence = (1 - edit_distance/max_length) * 100.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          name: {
+            type: 'string',
+            description: 'Artist name to search for',
+          },
+          region: {
+            type: 'string',
+            description: 'Region filter (e.g., "North East", "Manchester"). Hard filter: only returns artists whose location contains this string (empty/unknown locations pass through).',
+          },
+          limit: {
+            type: 'integer',
+            description: 'Max results to return (default: 20, max: 50). Set to 0 for unlimited.',
+          },
+          minConfidence: {
+            type: 'integer',
+            description: 'Minimum confidence threshold 0-100 (default: 50). Results below this are excluded.',
+          },
+        },
+        required: ['name'],
+      },
+    },
+    {
+      name: 'create_artist',
+      description: 'Create a new artist in BNDY (with AI review flags). Only use if search_artist found no matches. Artist will be flagged for manual review.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          name: {
+            type: 'string',
+            description: 'Artist name',
+          },
+          artistType: {
+            type: 'string',
+            enum: ['band', 'solo', 'duo', 'trio', 'group', 'dj', 'collective'],
+            description: 'Type of artist',
+          },
+          location: {
+            type: 'string',
+            description: 'Artist location (city or region, e.g., "North East", "Manchester", "London")',
+          },
+          locationType: {
+            type: 'string',
+            enum: ['city', 'regional'],
+            description: 'Location type: "city" for specific city/town (with coordinates), "regional" for wider area like "North East UK"',
+          },
+          bio: {
+            type: 'string',
+            description: 'Artist biography',
+          },
+          profileImageUrl: {
+            type: 'string',
+            description: 'Optional profile image URL. If external, Lambda will download and upload to S3 for permanent storage.',
+          },
+          genres: {
+            type: 'array',
+            items: { type: 'string' },
+            description: 'Optional array of music genres',
+          },
+          facebookUrl: {
+            type: 'string',
+            description: 'Optional Facebook URL',
+          },
+          instagramUrl: {
+            type: 'string',
+            description: 'Optional Instagram URL',
+          },
+          spotifyUrl: {
+            type: 'string',
+            description: 'Optional Spotify URL',
+          },
+          externalIds: {
+            type: 'array',
+            items: {
+              type: 'object',
+              properties: {
+                source: { type: 'string', description: 'External system name (e.g., "onthecasemusic", "songkick")' },
+                id: { type: 'string', description: 'ID in the external system' },
+              },
+              required: ['source', 'id'],
+            },
+            description: 'External system references for cross-referencing (optional)',
+          },
+        },
+        required: ['name', 'artistType', 'location'],
+      },
+    },
+    {
+      name: 'create_event',
+      description: 'Create an event in BNDY linking one or more artists to a venue on a specific date/time.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          artistId: {
+            type: 'string',
+            description: 'Single artist UUID (use artistIds for multi-artist events)',
+          },
+          artistIds: {
+            type: 'array',
+            items: { type: 'string' },
+            description: 'Array of artist UUIDs for multi-artist events (preferred over artistId)',
+          },
+          venueId: {
+            type: 'string',
+            description: 'Venue UUID (from search_venue or create_venue)',
+          },
+          date: {
+            type: 'string',
+            description: 'Event date in YYYY-MM-DD format',
+          },
+          startTime: {
+            type: 'string',
+            description: 'Start time in HH:MM format (24-hour, e.g., "20:00")',
+          },
+          endTime: {
+            type: 'string',
+            description: 'Optional end time in HH:MM format',
+          },
+          title: {
+            type: 'string',
+            description: 'Optional event title (defaults to "Artist @ Venue")',
+          },
+          isPublic: {
+            type: 'boolean',
+            description: 'Whether event should appear on public Frontstage map (default: false)',
+          },
+          externalIds: {
+            type: 'array',
+            items: {
+              type: 'object',
+              properties: {
+                source: { type: 'string', description: 'External system name (e.g., "onthecasemusic", "songkick")' },
+                id: { type: 'string', description: 'ID in the external system' },
+              },
+              required: ['source', 'id'],
+            },
+            description: 'External system references for cross-referencing (optional)',
+          },
+          // Enrichment fields (parity with edit_event)
+          price: {
+            type: 'string',
+            description: 'Ticket price (e.g., "FREE", "£15", "£10-£20")',
+          },
+          eventUrl: {
+            type: 'string',
+            description: 'URL to the source event page',
+          },
+          ticketed: {
+            type: 'boolean',
+            description: 'Whether event requires tickets (true) or is free/door entry (false)',
+          },
+          ticketInformation: {
+            type: 'string',
+            description: 'Additional ticket information text',
+          },
+          ticketUrl: {
+            type: 'string',
+            description: 'URL to purchase tickets',
+          },
+          imageUrl: {
+            type: 'string',
+            description: 'Event poster/image URL',
+          },
+          description: {
+            type: 'string',
+            description: 'Long-form event description',
+          },
+          notes: {
+            type: 'string',
+            description: 'Additional notes about the event',
+          },
+        },
+        required: ['venueId', 'date', 'startTime'],
+      },
+    },
+    {
+      name: 'search_event',
+      description: 'Search for events by artist ID or venue ID. Use this to find events for a specific artist so you can update them (e.g., change venue).',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          artistId: {
+            type: 'string',
+            description: 'Artist UUID to find events for',
+          },
+          venueId: {
+            type: 'string',
+            description: 'Venue UUID to find events at',
+          },
+          dateFrom: {
+            type: 'string',
+            description: 'Filter events from this date (YYYY-MM-DD)',
+          },
+          dateTo: {
+            type: 'string',
+            description: 'Filter events until this date (YYYY-MM-DD)',
+          },
+        },
+        required: [],
+      },
+    },
+    {
+      name: 'edit_artist',
+      description: 'Update an existing artist in BNDY. Use this to add location, genres, social media URLs, bio, etc.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          artistId: {
+            type: 'string',
+            description: 'Artist UUID to update',
+          },
+          name: {
+            type: 'string',
+            description: 'Updated artist name',
+          },
+          artistType: {
+            type: 'string',
+            enum: ['band', 'solo', 'duo', 'trio', 'group', 'dj', 'collective'],
+            description: 'Type of artist',
+          },
+          location: {
+            type: 'string',
+            description: 'Artist location (city or region)',
+          },
+          locationType: {
+            type: 'string',
+            enum: ['city', 'regional'],
+            description: 'Location type: "city" for specific city/town (with coordinates), "regional" for wider area like "North East UK"',
+          },
+          bio: {
+            type: 'string',
+            description: 'Artist biography',
+          },
+          genres: {
+            type: 'array',
+            items: { type: 'string' },
+            description: 'Music genres',
+          },
+          facebookUrl: {
+            type: 'string',
+            description: 'Facebook page URL',
+          },
+          instagramUrl: {
+            type: 'string',
+            description: 'Instagram URL',
+          },
+          websiteUrl: {
+            type: 'string',
+            description: 'Artist website URL',
+          },
+          youtubeUrl: {
+            type: 'string',
+            description: 'YouTube channel URL',
+          },
+          spotifyUrl: {
+            type: 'string',
+            description: 'Spotify artist URL',
+          },
+          twitterUrl: {
+            type: 'string',
+            description: 'Twitter/X URL',
+          },
+          profileImageUrl: {
+            type: 'string',
+            description: 'Profile image URL',
+          },
+          acoustic: {
+            type: 'boolean',
+            description: 'Whether the artist performs acoustic sets',
+          },
+          actType: {
+            type: 'array',
+            items: { type: 'string', enum: ['originals', 'covers', 'tribute'] },
+            description: 'Type of act (originals, covers, tribute)',
+          },
+          externalIds: {
+            type: 'array',
+            items: {
+              type: 'object',
+              properties: {
+                source: { type: 'string', description: 'External system name (e.g., "onthecasemusic", "songkick")' },
+                id: { type: 'string', description: 'ID in the external system' },
+              },
+              required: ['source', 'id'],
+            },
+            description: 'External system references (additive merge by default)',
+          },
+          replaceExternalIds: {
+            type: 'boolean',
+            description: 'If true, replace all externalIds instead of merging (default: false)',
+          },
+        },
+        required: ['artistId'],
+      },
+    },
+    {
+      name: 'list_artists',
+      description: 'List artists with pagination and optional filters for missing data. Use this to find artists that need enrichment (missing location, genres, social URLs, etc.).',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          limit: {
+            type: 'number',
+            description: 'Maximum records to return (default: 100, max: 500)',
+          },
+          offset: {
+            type: 'number',
+            description: 'Number of records to skip for pagination (default: 0)',
+          },
+          missingSocials: {
+            type: 'boolean',
+            description: 'Filter to artists with no Facebook, Instagram, or website',
+          },
+          missingLocation: {
+            type: 'boolean',
+            description: 'Filter to artists with no location set',
+          },
+          missingGenres: {
+            type: 'boolean',
+            description: 'Filter to artists with no genres set',
+          },
+          region: {
+            type: 'string',
+            description: 'Filter by location containing this string (e.g., "North East", "Manchester")',
+          },
+          createdSince: {
+            type: 'string',
+            description: 'Filter to artists created after this ISO date (e.g., "2024-01-01")',
+          },
+        },
+        required: [],
+      },
+    },
+    {
+      name: 'list_venues',
+      description: 'List venues with pagination and optional filters for missing data. Use this to find venues that need enrichment (missing address, coordinates, social URLs, etc.).',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          limit: {
+            type: 'number',
+            description: 'Maximum records to return (default: 100, max: 500)',
+          },
+          offset: {
+            type: 'number',
+            description: 'Number of records to skip for pagination (default: 0)',
+          },
+          missingSocials: {
+            type: 'boolean',
+            description: 'Filter to venues with no website or social media URLs',
+          },
+          missingAddress: {
+            type: 'boolean',
+            description: 'Filter to venues with no address set',
+          },
+          missingCity: {
+            type: 'boolean',
+            description: 'Filter to venues with no city set',
+          },
+          missingCoordinates: {
+            type: 'boolean',
+            description: 'Filter to venues with no latitude/longitude',
+          },
+          region: {
+            type: 'string',
+            description: 'Filter by address/city containing this string (e.g., "North East", "Manchester")',
+          },
+          city: {
+            type: 'string',
+            description: 'Filter by exact city match',
+          },
+          createdSince: {
+            type: 'string',
+            description: 'Filter to venues created after this ISO date (e.g., "2024-01-01")',
+          },
+          aiCreated: {
+            type: 'boolean',
+            description: 'Filter by AI-created status (true = AI created, false = user created)',
+          },
+        },
+        required: [],
+      },
+    },
+    {
+      name: 'edit_venue',
+      description: 'Update an existing venue in BNDY. Use this to add social media URLs, facilities, ticket info, etc.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          venueId: {
+            type: 'string',
+            description: 'Venue UUID to update',
+          },
+          name: {
+            type: 'string',
+            description: 'Updated venue name',
+          },
+          address: {
+            type: 'string',
+            description: 'Full address',
+          },
+          city: {
+            type: 'string',
+            description: 'City name',
+          },
+          nameVariants: {
+            type: 'array',
+            items: { type: 'string' },
+            description: 'Alternative names / aliases for the venue (e.g., "The Prince", "Prince of Wales Pub")',
+          },
+          postcode: {
+            type: 'string',
+            description: 'Postcode',
+          },
+          phone: {
+            type: 'string',
+            description: 'Contact phone number',
+          },
+          website: {
+            type: 'string',
+            description: 'Venue website URL',
+          },
+          socialMediaUrls: {
+            type: 'array',
+            items: {
+              type: 'object',
+              properties: {
+                platform: { type: 'string' },
+                url: { type: 'string' },
+              },
+            },
+            description: 'Social media links array with platform and url',
+          },
+          facilities: {
+            type: 'array',
+            items: { type: 'string' },
+            description: 'Venue facilities (e.g., parking, disabled_access)',
+          },
+          profileImageUrl: {
+            type: 'string',
+            description: 'Profile image URL',
+          },
+          standardTicketed: {
+            type: 'boolean',
+            description: 'Whether venue typically requires tickets',
+          },
+          standardTicketUrl: {
+            type: 'string',
+            description: 'Default ticket purchase URL',
+          },
+          standardTicketInformation: {
+            type: 'string',
+            description: 'Default ticket information text',
+          },
+          validated: {
+            type: 'boolean',
+            description: 'Whether venue has been validated',
+          },
+          externalIds: {
+            type: 'array',
+            items: {
+              type: 'object',
+              properties: {
+                source: { type: 'string', description: 'External system name (e.g., "onthecasemusic", "songkick")' },
+                id: { type: 'string', description: 'ID in the external system' },
+              },
+              required: ['source', 'id'],
+            },
+            description: 'External system references (additive merge by default)',
+          },
+          replaceExternalIds: {
+            type: 'boolean',
+            description: 'If true, replace all externalIds instead of merging (default: false)',
+          },
+        },
+        required: ['venueId'],
+      },
+    },
+    {
+      name: 'edit_event',
+      description: 'Update an existing event in BNDY. Can modify venue, title, date, time, description, ticket info, poster URL, etc. Only works for AI-created or community events.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          eventId: {
+            type: 'string',
+            description: 'Event UUID to update',
+          },
+          venueId: {
+            type: 'string',
+            description: 'New venue UUID to move event to (use search_venue to find correct venue first)',
+          },
+          title: {
+            type: 'string',
+            description: 'Event title',
+          },
+          date: {
+            type: 'string',
+            description: 'Event date in YYYY-MM-DD format',
+          },
+          startTime: {
+            type: 'string',
+            description: 'Start time in HH:MM format',
+          },
+          endTime: {
+            type: 'string',
+            description: 'End time in HH:MM format',
+          },
+          description: {
+            type: 'string',
+            description: 'Event description',
+          },
+          ticketed: {
+            type: 'boolean',
+            description: 'Whether event requires tickets',
+          },
+          ticketUrl: {
+            type: 'string',
+            description: 'Ticket purchase URL',
+          },
+          ticketInformation: {
+            type: 'string',
+            description: 'Ticket information text',
+          },
+          price: {
+            type: 'string',
+            description: 'Ticket price (e.g., "£15", "Free")',
+          },
+          imageUrl: {
+            type: 'string',
+            description: 'Event poster URL (use upload_event_poster to upload first)',
+          },
+          eventUrl: {
+            type: 'string',
+            description: 'External event page URL',
+          },
+          notes: {
+            type: 'string',
+            description: 'Additional notes',
+          },
+          isPublic: {
+            type: 'boolean',
+            description: 'Whether event should appear on public Frontstage map',
+          },
+          externalIds: {
+            type: 'array',
+            items: {
+              type: 'object',
+              properties: {
+                source: { type: 'string', description: 'External system name (e.g., "onthecasemusic", "songkick")' },
+                id: { type: 'string', description: 'ID in the external system' },
+              },
+              required: ['source', 'id'],
+            },
+            description: 'External system references (additive merge by default)',
+          },
+          replaceExternalIds: {
+            type: 'boolean',
+            description: 'If true, replace all externalIds instead of merging (default: false)',
+          },
+        },
+        required: ['eventId'],
+      },
+    },
+    {
+      name: 'delete_event',
+      description: 'Permanently delete an event from BNDY. This REMOVES the event entirely (not marked as cancelled). Only works for AI-created or community events. Use search_event first to verify you have the correct event ID.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          eventId: {
+            type: 'string',
+            description: 'Event UUID to permanently delete',
+          },
+        },
+        required: ['eventId'],
+      },
+    },
+    {
+      name: 'upload_event_poster',
+      description: 'Upload an event poster image to BNDY S3 bucket. Downloads from provided URL and uploads to S3. Use the returned s3Url with edit_event to set as event poster.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          eventId: {
+            type: 'string',
+            description: 'Event UUID (used to organize files in S3)',
+          },
+          imageUrl: {
+            type: 'string',
+            description: 'URL of the image to download and upload',
+          },
+        },
+        required: ['eventId', 'imageUrl'],
+      },
+    },
+    {
+      name: 'bulk_import',
+      description: 'Bulk import structured data (artists, venues, events) into BNDY with automatic deduplication. Uses Google Places for venue matching and name matching for artists. Handles the entire import server-side to avoid timeouts. Supports dry-run mode to preview what would be imported.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          data: {
+            type: 'object',
+            description: 'The structured data to import',
+            properties: {
+              artists: {
+                type: 'object',
+                description: 'Map of localId -> artist data. Each artist should have: name, act_type, genres[], location{city,region}, urls[{kind,url}], bio',
+              },
+              venues: {
+                type: 'object',
+                description: 'Map of localId -> venue data. Each venue should have: name, location{town,region}, urls[{kind,url}]',
+              },
+              events: {
+                type: 'object',
+                description: 'Map of localId -> event data. Each event should have: artist_id (local), venue_id (local), date (YYYY-MM-DD), time (HH:MM optional), title (optional)',
+              },
+            },
+          },
+          locationContext: {
+            type: 'string',
+            description: 'Location context for Google Places searches (e.g., "Greater Manchester, UK"). Defaults to "Greater Manchester, UK"',
+          },
+          dryRun: {
+            type: 'boolean',
+            description: 'If true, simulates the import without creating records. Use to preview what would be imported.',
+          },
+        },
+        required: ['data'],
+      },
+    },
+    {
+      name: 'get_by_external_id',
+      description: 'Look up a venue, artist, or event by its external system reference. Use this to check if an entity already exists in BNDY before creating it, enabling idempotent imports across sessions.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          entityType: {
+            type: 'string',
+            enum: ['venue', 'artist', 'event'],
+            description: 'Type of entity to look up',
+          },
+          source: {
+            type: 'string',
+            description: 'External system name (e.g., "onthecasemusic", "songkick", "bandsintown")',
+          },
+          id: {
+            type: 'string',
+            description: 'ID in the external system',
+          },
+        },
+        required: ['entityType', 'source', 'id'],
+      },
+    },
+    {
+      name: 'get_by_id',
+      description: 'Fetch full venue, artist, or event record by bndy UUID. Returns ALL fields including phone, website, facilities, socialMediaUrls, nameVariants, externalIds, etc. Use before edit_* to inspect current state for merge decisions.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          entityType: {
+            type: 'string',
+            enum: ['venue', 'artist', 'event'],
+            description: 'Type of entity to fetch',
+          },
+          id: {
+            type: 'string',
+            description: 'bndy UUID of the entity',
+          },
+        },
+        required: ['entityType', 'id'],
+      },
+    },
+  ],
+}));
+
+// Handle tool calls
+server.setRequestHandler(CallToolRequestSchema, async (request) => {
+  const { name, arguments: args } = request.params;
+
+  try {
+    switch (name) {
+      case 'search_venue':
+        const venueSearchResult = await searchVenue(args as any);
+        return {
+          content: [
+            {
+              type: 'text',
+              text: venueSearchResult,
+            },
+          ],
+        };
+
+      case 'create_venue':
+        const venueCreateResult = await createVenue(args as any);
+        return {
+          content: [
+            {
+              type: 'text',
+              text: venueCreateResult,
+            },
+          ],
+        };
+
+      case 'search_artist':
+        const artistSearchResult = await searchArtist(args as any);
+        return {
+          content: [
+            {
+              type: 'text',
+              text: artistSearchResult,
+            },
+          ],
+        };
+
+      case 'create_artist':
+        const artistCreateResult = await createArtist(args as any);
+        return {
+          content: [
+            {
+              type: 'text',
+              text: artistCreateResult,
+            },
+          ],
+        };
+
+      case 'create_event':
+        const eventCreateResult = await createEvent(args as any);
+        return {
+          content: [
+            {
+              type: 'text',
+              text: eventCreateResult,
+            },
+          ],
+        };
+
+      case 'edit_artist':
+        const artistEditResult = await editArtist(args as any);
+        return {
+          content: [
+            {
+              type: 'text',
+              text: artistEditResult,
+            },
+          ],
+        };
+
+      case 'list_artists':
+        const listArtistsResult = await listArtists(args as any);
+        return {
+          content: [
+            {
+              type: 'text',
+              text: listArtistsResult,
+            },
+          ],
+        };
+
+      case 'list_venues':
+        const listVenuesResult = await listVenues(args as any);
+        return {
+          content: [
+            {
+              type: 'text',
+              text: listVenuesResult,
+            },
+          ],
+        };
+
+      case 'edit_venue':
+        const venueEditResult = await editVenue(args as any);
+        return {
+          content: [
+            {
+              type: 'text',
+              text: venueEditResult,
+            },
+          ],
+        };
+
+      case 'edit_event':
+        const eventEditResult = await editEvent(args as any);
+        return {
+          content: [
+            {
+              type: 'text',
+              text: eventEditResult,
+            },
+          ],
+        };
+
+      case 'delete_event':
+        const eventDeleteResult = await deleteEvent(args as any);
+        return {
+          content: [
+            {
+              type: 'text',
+              text: eventDeleteResult,
+            },
+          ],
+        };
+
+      case 'search_event':
+        const eventSearchResult = await searchEvent(args as any);
+        return {
+          content: [
+            {
+              type: 'text',
+              text: eventSearchResult,
+            },
+          ],
+        };
+
+      case 'upload_event_poster':
+        const uploadResult = await uploadEventPoster(args as any);
+        return {
+          content: [
+            {
+              type: 'text',
+              text: uploadResult,
+            },
+          ],
+        };
+
+      case 'bulk_import':
+        const bulkImportResult = await bulkImport(args as any);
+        return {
+          content: [
+            {
+              type: 'text',
+              text: bulkImportResult,
+            },
+          ],
+        };
+
+      case 'get_by_external_id':
+        const lookupResult = await getByExternalId(args as any);
+        return {
+          content: [
+            {
+              type: 'text',
+              text: lookupResult,
+            },
+          ],
+        };
+
+      case 'get_by_id':
+        const getByIdResult = await getById(args as any);
+        return {
+          content: [
+            {
+              type: 'text',
+              text: getByIdResult,
+            },
+          ],
+        };
+
+      default:
+        throw new Error(`Unknown tool: ${name}`);
+    }
+  } catch (error: any) {
+    console.error(`Error in tool ${name}:`, error);
+    return {
+      content: [
+        {
+          type: 'text',
+          text: `Error: ${error.message}`,
+        },
+      ],
+      isError: true,
+    };
+  }
+});
+
+// Start server
+async function main() {
+  const transport = new StdioServerTransport();
+  await server.connect(transport);
+  console.error('BNDY MCP server running on stdio');
+}
+
+main().catch((error) => {
+  console.error('Fatal error starting MCP server:', error);
+  process.exit(1);
+});
