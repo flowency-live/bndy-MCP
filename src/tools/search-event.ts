@@ -6,6 +6,7 @@ import { apiRequest } from '../utils/http-client.js';
 export interface SearchEventParams {
   artistId?: string;
   venueId?: string;
+  festivalId?: string; // Filter by parent festival (Phase 1a)
   dateFrom?: string; // YYYY-MM-DD
   dateTo?: string; // YYYY-MM-DD
 }
@@ -22,21 +23,27 @@ interface EventResult {
   venueName?: string;
   venueCity?: string;
   externalIds?: Array<{ source: string; id: string }>;
+  // Festival fields (Phase 1a)
+  festivalId?: string;
+  festivalName?: string;
+  stageId?: string;
+  billing?: string;
+  billingOrder?: number;
 }
 
 export async function searchEvent(params: SearchEventParams): Promise<string> {
-  const { artistId, venueId, dateFrom, dateTo } = params;
+  const { artistId, venueId, festivalId, dateFrom, dateTo } = params;
 
-  // Validate: require at least artistId or venueId
-  if (!artistId && !venueId) {
+  // Validate: require at least artistId, venueId, or festivalId
+  if (!artistId && !venueId && !festivalId) {
     return JSON.stringify({
       found: false,
-      error: 'artistId or venueId is required',
-      message: 'You must provide either an artistId or venueId to search for events',
+      error: 'artistId, venueId, or festivalId is required',
+      message: 'You must provide an artistId, venueId, or festivalId to search for events',
     }, null, 2);
   }
 
-  console.error(`[search_event] Searching events${artistId ? ` for artist: ${artistId}` : ''}${venueId ? ` at venue: ${venueId}` : ''}`);
+  console.error(`[search_event] Searching events${artistId ? ` for artist: ${artistId}` : ''}${venueId ? ` at venue: ${venueId}` : ''}${festivalId ? ` for festival: ${festivalId}` : ''}`);
 
   try {
     // Build optional date filter query string
@@ -48,7 +55,10 @@ export async function searchEvent(params: SearchEventParams): Promise<string> {
 
     // Use public endpoints (no auth required)
     let searchUrl: string;
-    if (artistId) {
+    if (festivalId) {
+      // Festival child events endpoint (byFestival GSI)
+      searchUrl = `/api/festivals/${encodeURIComponent(festivalId)}/events${queryString}`;
+    } else if (artistId) {
       searchUrl = `/api/artists/${encodeURIComponent(artistId)}/public-events${queryString}`;
     } else {
       searchUrl = `/api/venues/${encodeURIComponent(venueId!)}/events${queryString}`;
@@ -81,6 +91,12 @@ export async function searchEvent(params: SearchEventParams): Promise<string> {
       venueName: event.venueName,
       venueCity: event.venueCity,
       externalIds: event.externalIds || [],
+      // Festival fields (Phase 1a)
+      ...(event.festivalId && { festivalId: event.festivalId }),
+      ...(event.festivalName && { festivalName: event.festivalName }),
+      ...(event.stageId && { stageId: event.stageId }),
+      ...(event.billing && { billing: event.billing }),
+      ...(event.billingOrder !== undefined && { billingOrder: event.billingOrder }),
     }));
 
     // Sort by date

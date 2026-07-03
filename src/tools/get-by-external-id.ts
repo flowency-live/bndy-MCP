@@ -5,7 +5,7 @@ import { apiRequest } from '../utils/http-client.js';
 import { normalizeExternalId } from '../utils/external-ids.js';
 
 export interface GetByExternalIdParams {
-  entityType: 'venue' | 'artist' | 'event';
+  entityType: 'venue' | 'artist' | 'event' | 'festival';
   source: string;  // e.g., "onthecasemusic", "songkick", "bandsintown"
   id: string;      // The ID in that external system
 }
@@ -46,6 +46,16 @@ interface EventEntity extends BaseEntity {
   isPublic?: boolean;
 }
 
+interface FestivalEntity extends BaseEntity {
+  name: string;
+  slug: string;
+  startDate: string;
+  endDate: string;
+  town?: string;
+  venueIds?: string[];
+  isPublic?: boolean;
+}
+
 export async function getByExternalId(params: GetByExternalIdParams): Promise<string> {
   const { entityType, source, id } = params;
 
@@ -59,11 +69,11 @@ export async function getByExternalId(params: GetByExternalIdParams): Promise<st
   }
 
   // Validate entityType
-  if (!['venue', 'artist', 'event'].includes(entityType)) {
+  if (!['venue', 'artist', 'event', 'festival'].includes(entityType)) {
     return JSON.stringify({
       found: false,
-      error: `Invalid entityType: "${entityType}". Must be "venue", "artist", or "event"`,
-      message: 'entityType must be one of: venue, artist, event',
+      error: `Invalid entityType: "${entityType}". Must be "venue", "artist", "event", or "festival"`,
+      message: 'entityType must be one of: venue, artist, event, festival',
     }, null, 2);
   }
 
@@ -94,7 +104,7 @@ export async function getByExternalId(params: GetByExternalIdParams): Promise<st
     console.error(`[get_by_external_id] Found ${entityType} with ${source}:${normalizedId}`);
 
     // Extract the entity from response based on type
-    const entity = response[entityType] as VenueEntity | ArtistEntity | EventEntity;
+    const entity = response[entityType] as VenueEntity | ArtistEntity | EventEntity | FestivalEntity;
 
     // Return formatted response based on entity type
     if (entityType === 'venue') {
@@ -133,23 +143,43 @@ export async function getByExternalId(params: GetByExternalIdParams): Promise<st
       }, null, 2);
     }
 
-    // entityType === 'event'
-    const event = entity as EventEntity;
+    if (entityType === 'event') {
+      const event = entity as EventEntity;
+      return JSON.stringify({
+        found: true,
+        entityType: 'event',
+        event: {
+          id: event.id,
+          title: event.title,
+          date: event.date,
+          startTime: event.startTime,
+          endTime: event.endTime,
+          artistId: event.artistId,
+          venueId: event.venueId,
+          isPublic: event.isPublic,
+          externalIds: event.externalIds || [],
+        },
+        message: `Found event "${event.title}" with external ID ${source}:${normalizedId}`,
+      }, null, 2);
+    }
+
+    // entityType === 'festival'
+    const festival = entity as FestivalEntity;
     return JSON.stringify({
       found: true,
-      entityType: 'event',
-      event: {
-        id: event.id,
-        title: event.title,
-        date: event.date,
-        startTime: event.startTime,
-        endTime: event.endTime,
-        artistId: event.artistId,
-        venueId: event.venueId,
-        isPublic: event.isPublic,
-        externalIds: event.externalIds || [],
+      entityType: 'festival',
+      festival: {
+        id: festival.id,
+        name: festival.name,
+        slug: festival.slug,
+        startDate: festival.startDate,
+        endDate: festival.endDate,
+        town: festival.town,
+        venueIds: festival.venueIds || [],
+        isPublic: festival.isPublic,
+        externalIds: festival.externalIds || [],
       },
-      message: `Found event "${event.title}" with external ID ${source}:${normalizedId}`,
+      message: `Found festival "${festival.name}" with external ID ${source}:${normalizedId}`,
     }, null, 2);
 
   } catch (error: unknown) {

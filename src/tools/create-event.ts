@@ -23,6 +23,11 @@ interface CreateEventParams {
   imageUrl?: string; // Poster image URL
   description?: string; // Long-form event description
   notes?: string; // Additional notes
+  // Festival fields (Phase 1a - festival-mcp-write-api-spec §2)
+  festivalId?: string; // Links event to parent festival
+  stageId?: string; // Stage within festival
+  billing?: 'headline' | 'special_guest' | 'support' | 'general' | 'opener';
+  billingOrder?: number; // Sort order within billing tier
 }
 
 interface CreateEventResponse {
@@ -42,7 +47,8 @@ interface CreateEventResponse {
 export async function createEvent(params: CreateEventParams): Promise<string> {
   const {
     artistId, artistIds, venueId, date, startTime, endTime, title, isPublic, externalIds,
-    price, eventUrl, ticketed, ticketInformation, ticketUrl, imageUrl, description, notes
+    price, eventUrl, ticketed, ticketInformation, ticketUrl, imageUrl, description, notes,
+    festivalId, stageId, billing, billingOrder
   } = params;
 
   // Build artistIds array from either artistIds or artistId
@@ -77,6 +83,12 @@ export async function createEvent(params: CreateEventParams): Promise<string> {
     if (description !== undefined) eventData.description = description;
     if (notes !== undefined) eventData.notes = notes;
 
+    // Festival fields (Phase 1a)
+    if (festivalId !== undefined) eventData.festivalId = festivalId;
+    if (stageId !== undefined) eventData.stageId = stageId;
+    if (billing !== undefined) eventData.billing = billing;
+    if (billingOrder !== undefined) eventData.billingOrder = billingOrder;
+
     // Call BNDY events community endpoint (no auth required)
     const response = await apiRequest<CreateEventResponse>('/api/events/community', 'POST', eventData);
 
@@ -106,6 +118,11 @@ export async function createEvent(params: CreateEventParams): Promise<string> {
         ...(imageUrl !== undefined && { imageUrl }),
         ...(description !== undefined && { description }),
         ...(notes !== undefined && { notes }),
+        // Festival fields
+        ...(festivalId !== undefined && { festivalId }),
+        ...(stageId !== undefined && { stageId }),
+        ...(billing !== undefined && { billing }),
+        ...(billingOrder !== undefined && { billingOrder }),
         aiCreated: true,
         needsReview: true
       },

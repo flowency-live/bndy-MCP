@@ -5,7 +5,7 @@ const API_BASE_URL = 'https://api.bndy.co.uk';
 
 export async function apiRequest<T = any>(
   path: string,
-  method: 'GET' | 'POST' | 'PUT' | 'DELETE' = 'GET',
+  method: 'GET' | 'POST' | 'PUT' | 'PATCH' | 'DELETE' = 'GET',
   body?: any
 ): Promise<T> {
   const url = `${API_BASE_URL}${path}`;
@@ -17,7 +17,7 @@ export async function apiRequest<T = any>(
     },
   };
 
-  if (body && (method === 'POST' || method === 'PUT')) {
+  if (body && (method === 'POST' || method === 'PUT' || method === 'PATCH')) {
     options.body = JSON.stringify(body);
   }
 

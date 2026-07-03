@@ -25,6 +25,15 @@ import { bulkImport } from './tools/bulk-import.js';
 import { getByExternalId } from './tools/get-by-external-id.js';
 import { getById } from './tools/get-by-id.js';
 import { deleteEvent } from './tools/delete-event.js';
+import { deleteArtist } from './tools/delete-artist.js';
+import { deleteVenue } from './tools/delete-venue.js';
+import { enrichVenue } from './tools/enrich-venue.js';
+// Festival tools (Phase 1a - festival-mcp-write-api-spec §2)
+import { createFestival } from './tools/create-festival.js';
+import { editFestival } from './tools/edit-festival.js';
+import { searchFestival } from './tools/search-festival.js';
+import { addLineupSlot } from './tools/add-lineup-slot.js';
+import { resolveLineupSlot } from './tools/resolve-lineup-slot.js';
 
 // Initialize MCP server
 const server = new Server(
@@ -138,7 +147,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
     },
     {
       name: 'create_artist',
-      description: 'Create a new artist in BNDY (with AI review flags). Only use if search_artist found no matches. Artist will be flagged for manual review.',
+      description: 'Find-or-create an artist in BNDY. Server-side resolution (ADR-014): normalises the name and returns {action: matched|review|created} - an existing match (no duplicate), candidates needing review when ambiguous, or a newly created artist flagged for review. Safe to call without pre-checking via search_artist; it deduplicates server-side.',
       inputSchema: {
         type: 'object',
         properties: {
@@ -285,13 +294,31 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
             type: 'string',
             description: 'Additional notes about the event',
           },
+          // Festival fields (Phase 1a)
+          festivalId: {
+            type: 'string',
+            description: 'Links event to parent festival (creates child event)',
+          },
+          stageId: {
+            type: 'string',
+            description: 'Stage ID within festival',
+          },
+          billing: {
+            type: 'string',
+            enum: ['headline', 'special_guest', 'support', 'general', 'opener'],
+            description: 'Billing tier for festival events',
+          },
+          billingOrder: {
+            type: 'number',
+            description: 'Sort order within billing tier (0 = top)',
+          },
         },
         required: ['venueId', 'date', 'startTime'],
       },
     },
     {
       name: 'search_event',
-      description: 'Search for events by artist ID or venue ID. Use this to find events for a specific artist so you can update them (e.g., change venue).',
+      description: 'Search for events by artist ID, venue ID, or festival ID. Use this to find events for a specific artist so you can update them (e.g., change venue), or to list all child events of a festival.',
       inputSchema: {
         type: 'object',
         properties: {
@@ -302,6 +329,10 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
           venueId: {
             type: 'string',
             description: 'Venue UUID to find events at',
+          },
+          festivalId: {
+            type: 'string',
+            description: 'Festival UUID to find child events for (Phase 1a)',
           },
           dateFrom: {
             type: 'string',
@@ -404,6 +435,20 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
           replaceExternalIds: {
             type: 'boolean',
             description: 'If true, replace all externalIds instead of merging (default: false)',
+          },
+        },
+        required: ['artistId'],
+      },
+    },
+    {
+      name: 'delete_artist',
+      description: 'Permanently delete an artist from BNDY. Use search_artist or get_by_id first to verify you have the correct artist ID.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          artistId: {
+            type: 'string',
+            description: 'Artist UUID to permanently delete',
           },
         },
         required: ['artistId'],
@@ -593,14 +638,53 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
       },
     },
     {
+      name: 'delete_venue',
+      description: 'Permanently delete a venue from BNDY. Use search_venue or get_by_id first to verify you have the correct venue ID.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          venueId: {
+            type: 'string',
+            description: 'Venue UUID to permanently delete',
+          },
+        },
+        required: ['venueId'],
+      },
+    },
+    {
+      name: 'enrich_venue',
+      description: 'Geocode/backfill an existing venue to add google_place_id and coordinates. Use this on legacy venues missing place_id to prevent duplicates when source-runner runs. Supports batch processing with an array of venueIds.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          venueId: {
+            oneOf: [
+              { type: 'string', description: 'Single venue UUID to enrich' },
+              { type: 'array', items: { type: 'string' }, description: 'Array of venue UUIDs for batch enrichment' },
+            ],
+            description: 'Venue UUID(s) to geocode/backfill',
+          },
+          force: {
+            type: 'boolean',
+            description: 'If true, re-geocode even if venue already has google_place_id (default: false)',
+          },
+        },
+        required: ['venueId'],
+      },
+    },
+    {
       name: 'edit_event',
-      description: 'Update an existing event in BNDY. Can modify venue, title, date, time, description, ticket info, poster URL, etc. Only works for AI-created or community events.',
+      description: 'Update an existing event in BNDY. Can modify artist, venue, title, date, time, description, ticket info, poster URL, etc. Use artistId to reassign events when merging duplicate artists.',
       inputSchema: {
         type: 'object',
         properties: {
           eventId: {
             type: 'string',
             description: 'Event UUID to update',
+          },
+          artistId: {
+            type: 'string',
+            description: 'New artist UUID to reassign event to (use search_artist to find correct artist first). Use this when merging duplicate artists.',
           },
           venueId: {
             type: 'string',
@@ -674,13 +758,35 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
             type: 'boolean',
             description: 'If true, replace all externalIds instead of merging (default: false)',
           },
+          // Festival fields (Phase 1a)
+          festivalId: {
+            type: 'string',
+            description: 'Links event to parent festival',
+          },
+          festivalName: {
+            type: 'string',
+            description: 'Denormalized festival name for display',
+          },
+          stageId: {
+            type: 'string',
+            description: 'Stage ID within festival',
+          },
+          billing: {
+            type: 'string',
+            enum: ['headline', 'special_guest', 'support', 'general', 'opener'],
+            description: 'Billing tier for festival events',
+          },
+          billingOrder: {
+            type: 'number',
+            description: 'Sort order within billing tier (0 = top)',
+          },
         },
         required: ['eventId'],
       },
     },
     {
       name: 'delete_event',
-      description: 'Permanently delete an event from BNDY. This REMOVES the event entirely (not marked as cancelled). Only works for AI-created or community events. Use search_event first to verify you have the correct event ID.',
+      description: 'Permanently delete an event from BNDY. This REMOVES the event entirely (not marked as cancelled). Use search_event first to verify you have the correct event ID.',
       inputSchema: {
         type: 'object',
         properties: {
@@ -748,13 +854,13 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
     },
     {
       name: 'get_by_external_id',
-      description: 'Look up a venue, artist, or event by its external system reference. Use this to check if an entity already exists in BNDY before creating it, enabling idempotent imports across sessions.',
+      description: 'Look up a venue, artist, event, or festival by its external system reference. Use this to check if an entity already exists in BNDY before creating it, enabling idempotent imports across sessions.',
       inputSchema: {
         type: 'object',
         properties: {
           entityType: {
             type: 'string',
-            enum: ['venue', 'artist', 'event'],
+            enum: ['venue', 'artist', 'event', 'festival'],
             description: 'Type of entity to look up',
           },
           source: {
@@ -786,6 +892,164 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
           },
         },
         required: ['entityType', 'id'],
+      },
+    },
+    // Festival tools (Phase 1a - festival-mcp-write-api-spec §2)
+    {
+      name: 'create_festival',
+      description: 'Create a new festival in BNDY. Search first with search_festival. A festival groups child events - it is not an event and never appears on the gig map itself. Festivals have lineup slots that resolve to artists/events across import runs.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          name: { type: 'string', description: 'Festival name (required)' },
+          startDate: { type: 'string', description: 'Start date YYYY-MM-DD (required)' },
+          endDate: { type: 'string', description: 'End date YYYY-MM-DD (defaults to startDate)' },
+          description: { type: 'string', description: 'Festival description' },
+          primaryVenueId: { type: 'string', description: 'Primary venue UUID' },
+          venueIds: { type: 'array', items: { type: 'string' }, description: 'All participating venue UUIDs' },
+          stages: {
+            type: 'array',
+            items: {
+              type: 'object',
+              properties: {
+                name: { type: 'string' },
+                venueId: { type: 'string' },
+              },
+            },
+            description: 'Festival stages (server assigns IDs)',
+          },
+          lineup: {
+            type: 'array',
+            items: {
+              type: 'object',
+              properties: {
+                displayName: { type: 'string', description: 'Act name as billed' },
+                artistId: { type: 'string' },
+                day: { type: 'string' },
+                stageId: { type: 'string' },
+                startTime: { type: 'string' },
+                endTime: { type: 'string' },
+                billing: { type: 'string', enum: ['headline', 'special_guest', 'support', 'general', 'opener'] },
+                billingOrder: { type: 'number' },
+              },
+            },
+          },
+          ticketed: { type: 'boolean' },
+          price: { type: 'string', description: 'Price text (e.g., "FREE", "from £15")' },
+          ticketUrl: { type: 'string' },
+          lineupUrl: { type: 'string' },
+          websiteUrl: { type: 'string' },
+          posterImageUrl: { type: 'string' },
+          heroImageUrl: { type: 'string' },
+          theme: {
+            type: 'object',
+            properties: {
+              primaryColor: { type: 'string' },
+              secondaryColor: { type: 'string' },
+              backgroundColor: { type: 'string' },
+              foregroundColor: { type: 'string' },
+            },
+          },
+          isPublic: { type: 'boolean', description: 'Default false - MUST pass true for public festivals' },
+          externalIds: {
+            type: 'array',
+            items: {
+              type: 'object',
+              properties: {
+                source: { type: 'string' },
+                id: { type: 'string' },
+              },
+            },
+          },
+        },
+        required: ['name', 'startDate'],
+      },
+    },
+    {
+      name: 'edit_festival',
+      description: 'Update an existing festival. externalIds are merged additively by default; set replaceExternalIds=true to replace. Slug is immutable.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          festivalId: { type: 'string', description: 'Festival UUID (required)' },
+          name: { type: 'string' },
+          description: { type: 'string' },
+          startDate: { type: 'string' },
+          endDate: { type: 'string' },
+          primaryVenueId: { type: 'string' },
+          venueIds: { type: 'array', items: { type: 'string' } },
+          stages: { type: 'array', items: { type: 'object' } },
+          ticketed: { type: 'boolean' },
+          price: { type: 'string' },
+          ticketUrl: { type: 'string' },
+          lineupUrl: { type: 'string' },
+          websiteUrl: { type: 'string' },
+          posterImageUrl: { type: 'string' },
+          heroImageUrl: { type: 'string' },
+          theme: { type: 'object' },
+          isPublic: { type: 'boolean' },
+          externalIds: { type: 'array', items: { type: 'object' } },
+          replaceExternalIds: { type: 'boolean', description: 'Replace all externalIds instead of merging' },
+        },
+        required: ['festivalId'],
+      },
+    },
+    {
+      name: 'search_festival',
+      description: 'Search for festivals by name/town/dates. Returns ALL matches (not top-match-only). Dedup rule: same/near name + same town + overlapping dates = same festival; reuse it.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          name: { type: 'string', description: 'Festival name to search' },
+          town: { type: 'string', description: 'Town/city filter' },
+          dateFrom: { type: 'string', description: 'Filter start date YYYY-MM-DD' },
+          dateTo: { type: 'string', description: 'Filter end date YYYY-MM-DD' },
+        },
+        required: ['name'],
+      },
+    },
+    {
+      name: 'add_lineup_slot',
+      description: 'Add lineup slots to a festival. Always import a full bill in ONE call. Server dedups on (displayName lowercased, day, stageId) - re-running import does not double the bill.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          festivalId: { type: 'string', description: 'Festival UUID (required)' },
+          slots: {
+            type: 'array',
+            items: {
+              type: 'object',
+              properties: {
+                displayName: { type: 'string', description: 'Act name as billed (required)' },
+                artistId: { type: 'string', description: 'Artist UUID if already resolved' },
+                day: { type: 'string', description: 'Day YYYY-MM-DD' },
+                stageId: { type: 'string' },
+                startTime: { type: 'string' },
+                endTime: { type: 'string' },
+                billing: { type: 'string', enum: ['headline', 'special_guest', 'support', 'general', 'opener'] },
+                billingOrder: { type: 'number' },
+              },
+              required: ['displayName'],
+            },
+            description: 'Array of lineup slots to add',
+          },
+        },
+        required: ['festivalId', 'slots'],
+      },
+    },
+    {
+      name: 'resolve_lineup_slot',
+      description: 'Resolve a lineup slot to an artist and/or child event. Use as set times become available: crawl finds times → create child event → resolve slot. Set remove=true for acts that drop from the bill.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          festivalId: { type: 'string', description: 'Festival UUID (required)' },
+          slotId: { type: 'string', description: 'Slot UUID (required)' },
+          artistId: { type: 'string', description: 'Artist UUID when resolved' },
+          eventId: { type: 'string', description: 'Child event UUID when created' },
+          remove: { type: 'boolean', description: 'True to remove slot (act dropped from bill)' },
+        },
+        required: ['festivalId', 'slotId'],
       },
     },
   ],
@@ -863,6 +1127,17 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
           ],
         };
 
+      case 'delete_artist':
+        const artistDeleteResult = await deleteArtist(args as any);
+        return {
+          content: [
+            {
+              type: 'text',
+              text: artistDeleteResult,
+            },
+          ],
+        };
+
       case 'list_artists':
         const listArtistsResult = await listArtists(args as any);
         return {
@@ -892,6 +1167,28 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
             {
               type: 'text',
               text: venueEditResult,
+            },
+          ],
+        };
+
+      case 'delete_venue':
+        const venueDeleteResult = await deleteVenue(args as any);
+        return {
+          content: [
+            {
+              type: 'text',
+              text: venueDeleteResult,
+            },
+          ],
+        };
+
+      case 'enrich_venue':
+        const venueEnrichResult = await enrichVenue(args as any);
+        return {
+          content: [
+            {
+              type: 'text',
+              text: venueEnrichResult,
             },
           ],
         };
@@ -969,6 +1266,62 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
             {
               type: 'text',
               text: getByIdResult,
+            },
+          ],
+        };
+
+      // Festival tools (Phase 1a)
+      case 'create_festival':
+        const festivalCreateResult = await createFestival(args as any);
+        return {
+          content: [
+            {
+              type: 'text',
+              text: festivalCreateResult,
+            },
+          ],
+        };
+
+      case 'edit_festival':
+        const festivalEditResult = await editFestival(args as any);
+        return {
+          content: [
+            {
+              type: 'text',
+              text: festivalEditResult,
+            },
+          ],
+        };
+
+      case 'search_festival':
+        const festivalSearchResult = await searchFestival(args as any);
+        return {
+          content: [
+            {
+              type: 'text',
+              text: festivalSearchResult,
+            },
+          ],
+        };
+
+      case 'add_lineup_slot':
+        const lineupSlotResult = await addLineupSlot(args as any);
+        return {
+          content: [
+            {
+              type: 'text',
+              text: lineupSlotResult,
+            },
+          ],
+        };
+
+      case 'resolve_lineup_slot':
+        const resolveSlotResult = await resolveLineupSlot(args as any);
+        return {
+          content: [
+            {
+              type: 'text',
+              text: resolveSlotResult,
             },
           ],
         };

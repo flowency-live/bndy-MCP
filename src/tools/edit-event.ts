@@ -7,6 +7,7 @@ import { mergeExternalIds, normalizeExternalIds, ExternalId } from '../utils/ext
 
 export interface EditEventParams {
   eventId: string;
+  artistId?: string; // Change event artist (for merging duplicates)
   venueId?: string; // Change event venue
   title?: string;
   date?: string; // YYYY-MM-DD
@@ -23,6 +24,12 @@ export interface EditEventParams {
   isPublic?: boolean; // Whether event appears on public Frontstage map
   externalIds?: Array<{ source: string; id: string }>; // External system references
   replaceExternalIds?: boolean; // If true, replace all externalIds instead of merge
+  // Festival fields (Phase 1a - festival-mcp-write-api-spec §2)
+  festivalId?: string; // Links event to parent festival
+  festivalName?: string; // Denormalized festival name for display
+  stageId?: string; // Stage within festival
+  billing?: 'headline' | 'special_guest' | 'support' | 'general' | 'opener';
+  billingOrder?: number; // Sort order within billing tier
 }
 
 interface EditEventResponse {
@@ -63,6 +70,7 @@ export async function editEvent(params: EditEventParams): Promise<string> {
     // Build update payload - only include fields that were provided
     const updatePayload: Record<string, unknown> = {};
 
+    if (updateData.artistId !== undefined) updatePayload.artist_id = updateData.artistId;
     if (updateData.venueId !== undefined) updatePayload.venueId = updateData.venueId;
     if (updateData.title !== undefined) updatePayload.title = updateData.title;
     if (updateData.date !== undefined) updatePayload.date = updateData.date;
@@ -77,6 +85,12 @@ export async function editEvent(params: EditEventParams): Promise<string> {
     if (updateData.eventUrl !== undefined) updatePayload.eventUrl = updateData.eventUrl;
     if (updateData.notes !== undefined) updatePayload.notes = updateData.notes;
     if (updateData.isPublic !== undefined) updatePayload.isPublic = updateData.isPublic;
+    // Festival fields (Phase 1a)
+    if (updateData.festivalId !== undefined) updatePayload.festivalId = updateData.festivalId;
+    if (updateData.festivalName !== undefined) updatePayload.festivalName = updateData.festivalName;
+    if (updateData.stageId !== undefined) updatePayload.stageId = updateData.stageId;
+    if (updateData.billing !== undefined) updatePayload.billing = updateData.billing;
+    if (updateData.billingOrder !== undefined) updatePayload.billingOrder = updateData.billingOrder;
 
     // Handle externalIds with merge logic
     if (updateData.externalIds !== undefined) {
