@@ -20,10 +20,19 @@ export async function searchVenue(params: SearchVenueParams): Promise<string> {
 
     console.error(`[search_venue] API returned ${venues.length} venues`);
 
-    // Filter results by city match (case-insensitive)
+    // Filter results by city match (case-insensitive).
+    // 2026-07-27 AUDIT FIX (F2/#2 dupe generator): address-less venues were
+    // previously DROPPED here (`if (!venue.address) return false`), making
+    // them permanently unfindable — every import re-created them. An
+    // address-less venue now passes the city filter on NAME similarity
+    // instead, flagged so the caller knows the city couldn't be verified.
     const cityNormalized = city.toLowerCase().trim();
     const cityMatches = venues.filter(venue => {
-      if (!venue.address) return false;
+      if (!venue.address) {
+        // Can't verify city — include when the name is a plausible match so
+        // the caller sees it rather than blindly creating a duplicate.
+        return calculateSimilarity(name, venue.name || '') >= 60;
+      }
       const addressLower = venue.address.toLowerCase();
       return addressLower.includes(cityNormalized);
     });

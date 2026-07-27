@@ -1,7 +1,7 @@
 // Create Event Tool - MCP Implementation (FIXED)
 // Creates an event linking an artist and venue
 
-import { apiRequest } from '../utils/http-client.js';
+import { apiRequest, ApiError } from '../utils/http-client.js';
 import { normalizeExternalIds } from '../utils/external-ids.js';
 
 interface CreateEventParams {
@@ -70,7 +70,12 @@ export async function createEvent(params: CreateEventParams): Promise<string> {
       title: title || undefined,
       isPublic: isPublic !== undefined ? isPublic : false,
       externalIds: normalizedExternalIds,
-      source: 'mcp_ai_import'
+      source: 'mcp_ai_import',
+      // 2026-07-27 AUDIT FIX F7: these flags were previously CLAIMED in the
+      // tool's response but never sent — MCP events were invisible to any
+      // review queue keyed on them. Sent honestly now.
+      ai_created: true,
+      needs_review: true
     };
 
     // Add enrichment fields if provided (parity with edit_event)
@@ -135,22 +140,14 @@ export async function createEvent(params: CreateEventParams): Promise<string> {
   } catch (error: any) {
     console.error(`[create_event] Error:`, error);
 
-    // Check for duplicate event error (409 Conflict)
-    if (error.message?.includes('409') || error.message?.includes('Duplicate')) {
-      // Try to parse existing event info from error
-      let existingEventId = null;
-      let existingEventTitle = null;
-      let matchedExternalId = null;
-      let isExternalIdMatch = false;
-      try {
-        const errorData = JSON.parse(error.message.replace(/^.*?(\{.*\}).*$/, '$1'));
-        existingEventId = errorData.existingEventId;
-        existingEventTitle = errorData.existingEventTitle;
-        matchedExternalId = errorData.matchedExternalId;
-        isExternalIdMatch = errorData.error?.includes('externalId');
-      } catch {
-        // Ignore parse errors
-      }
+    // Check for duplicate event error (409 Conflict).
+    // 2026-07-27: ApiError carries the parsed body — no more regex-scraping
+    // the message (which usually failed and lost the existing event id).
+    if ((error instanceof ApiError && error.isDuplicate) || error.message?.includes('Duplicate')) {
+      const errorData = (error instanceof ApiError && error.body) ? error.body : {};
+      const existingEventId = errorData.existingEventId || errorData.existingId || null;
+      const existingEventTitle = errorData.existingEventTitle || null;
+      const matchedExternalId = errorData.matchedExternalId || null;
 
       const message = matchedExternalId
         ? `Event already exists: Found existing event with externalId ${matchedExternalId.source}:${matchedExternalId.id}. This event was already imported.`

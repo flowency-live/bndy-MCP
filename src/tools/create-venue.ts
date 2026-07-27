@@ -3,7 +3,7 @@
 // 2. Calls /api/venues/find-or-create with place data
 
 import { findPlace } from '../utils/google-places.js';
-import { apiRequest } from '../utils/http-client.js';
+import { apiRequest, ApiError } from '../utils/http-client.js';
 import { normalizeExternalIds } from '../utils/external-ids.js';
 
 interface CreateVenueParams {
@@ -23,9 +23,35 @@ export async function createVenue(params: CreateVenueParams): Promise<string> {
   console.error(`[create_venue] Creating venue "${name}" in ${city}`);
 
   try {
-    // STEP 1: Search Google Places for this venue
-    const searchQuery = `${name}, ${city}`;
-    const placeResult = await findPlace(searchQuery);
+    // 2026-07-27 AUDIT FIX (F2/#1 dupe generator): previously this tool
+    // DISCARDED caller-supplied googlePlaceId/latitude/longitude/address,
+    // re-geocoded "name, city" only, and blind-trusted candidates[0] — a
+    // near-miss geocode meant a different place_id and therefore a duplicate
+    // venue. Now: an explicit googlePlaceId is HONOURED (no re-geocode), and
+    // the geocode query includes the address for disambiguation.
+    let placeResult: { name: string; address: string; placeId: string; latitude?: number; longitude?: number } | null = null;
+
+    if (params.googlePlaceId && params.googlePlaceId.trim()) {
+      placeResult = {
+        name,
+        address,
+        placeId: params.googlePlaceId.trim(),
+        latitude: params.latitude,
+        longitude: params.longitude,
+      };
+      console.error(`[create_venue] Using caller-supplied googlePlaceId ${placeResult.placeId} (no re-geocode)`);
+    } else {
+      // Include the address in the query — it is the most disambiguating
+      // field the caller supplies ("The Swan, 12 High St, Congleton" not
+      // just "The Swan, Congleton").
+      const searchQuery = address ? `${name}, ${address}, ${city}` : `${name}, ${city}`;
+      placeResult = await findPlace(searchQuery);
+
+      if (!placeResult && address) {
+        // One retry without the address in case a malformed address broke the search
+        placeResult = await findPlace(`${name}, ${city}`);
+      }
+    }
 
     if (!placeResult) {
       return JSON.stringify({
@@ -86,10 +112,26 @@ export async function createVenue(params: CreateVenueParams): Promise<string> {
 
   } catch (error: any) {
     console.error(`[create_venue] Error:`, error);
+
+    // Server hard-gate bounce: a venue with this google_place_id already
+    // exists — match signal, not failure.
+    if (error instanceof ApiError && error.isDuplicate) {
+      const existingId = error.body?.existingId || null;
+      return JSON.stringify({
+        success: false,
+        action: 'duplicate',
+        error: 'DUPLICATE_VENUE',
+        existingVenueId: existingId,
+        message: existingId
+          ? `The backend uniqueness gate bounced this create: a venue with this Google Place ID already exists (id: ${existingId}). USE THE EXISTING RECORD.`
+          : 'The backend uniqueness gate bounced this create: a venue with this Google Place ID already exists. Use search_venue / list_venues to find it and reuse its id.',
+      }, null, 2);
+    }
+
     return JSON.stringify({
       success: false,
       error: error.message,
-      message: 'Failed to create venue',
+      message: 'Failed to create venue. No venue was created (fail closed).',
       details: error.stack
     }, null, 2);
   }
