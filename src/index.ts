@@ -147,7 +147,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
     },
     {
       name: 'create_artist',
-      description: 'Find-or-create an artist in BNDY. Server-side resolution (ADR-014): normalises the name and returns {action: matched|review|created} - an existing match (no duplicate), candidates needing review when ambiguous, or a newly created artist flagged for review. Safe to call without pre-checking via search_artist; it deduplicates server-side.',
+      description: 'Find-or-create an artist in BNDY. Server-side resolution (ADR-014): normalises the name and returns {action: matched|review|created}. When action:review is returned with candidates, RETRY with either resolveTo (candidate id) OR confirmNew (true). For acts whose own FB page name includes a descriptor tail (e.g. "NU CALL - Nu-Metal Tribute Band"), set verifiedSourceName:true + facebookUrl to bypass §2A.5 validation.',
       inputSchema: {
         type: 'object',
         properties: {
@@ -179,8 +179,20 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
           },
           genres: {
             type: 'array',
-            items: { type: 'string' },
-            description: 'Optional array of music genres',
+            items: {
+              type: 'string',
+              enum: [
+                'Rock', 'Rock n Roll', 'Grunge', 'Metal', 'Punk', 'Alternative', 'New Wave',
+                'Pop', 'Indie', 'Britpop', 'Mod',
+                'Blues', 'R&B', 'Country', 'Americana',
+                'Folk', 'Soul', 'Funk', 'Motown', 'Disco',
+                'Electronic', 'Dance',
+                'Jazz', 'Classical', 'Reggae', 'Ska', 'Latin',
+                '50s', '60s', '70s', '80s', '90s', '00s',
+                'Other'
+              ]
+            },
+            description: 'Optional array of music genres (must be from canonical list)',
           },
           facebookUrl: {
             type: 'string',
@@ -205,6 +217,23 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
               required: ['source', 'id'],
             },
             description: 'External system references for cross-referencing (optional)',
+          },
+          nameVariants: {
+            type: 'array',
+            items: { type: 'string' },
+            description: 'Alternative names / billing strings that mean THIS artist. These are used for identity resolution — an incoming event with one of these names will match this artist instead of creating a duplicate.',
+          },
+          resolveTo: {
+            type: 'string',
+            description: 'RESOLUTION PARAM: When action:review was returned, pass a candidate id here to link to that existing artist instead of creating a new one. Use exactly one of resolveTo OR confirmNew, never both.',
+          },
+          confirmNew: {
+            type: 'boolean',
+            description: 'RESOLUTION PARAM: When action:review was returned, set true to confirm this is genuinely a new artist despite shared tokens with existing candidates. Use exactly one of resolveTo OR confirmNew, never both.',
+          },
+          verifiedSourceName: {
+            type: 'boolean',
+            description: 'BYPASS §2A.5: Set true ONLY when the name (including any descriptor tail like "- Nu-Metal Tribute Band") is the act\'s OWN Facebook page name. Requires facebookUrl to be set. Bypasses the descriptor-tail validation that would otherwise reject the name.',
           },
         },
         required: ['name', 'artistType', 'location'],
@@ -380,8 +409,20 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
           },
           genres: {
             type: 'array',
-            items: { type: 'string' },
-            description: 'Music genres',
+            items: {
+              type: 'string',
+              enum: [
+                'Rock', 'Rock n Roll', 'Grunge', 'Metal', 'Punk', 'Alternative', 'New Wave',
+                'Pop', 'Indie', 'Britpop', 'Mod',
+                'Blues', 'R&B', 'Country', 'Americana',
+                'Folk', 'Soul', 'Funk', 'Motown', 'Disco',
+                'Electronic', 'Dance',
+                'Jazz', 'Classical', 'Reggae', 'Ska', 'Latin',
+                '50s', '60s', '70s', '80s', '90s', '00s',
+                'Other'
+              ]
+            },
+            description: 'Music genres (must be from canonical list)',
           },
           facebookUrl: {
             type: 'string',
@@ -435,6 +476,15 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
           replaceExternalIds: {
             type: 'boolean',
             description: 'If true, replace all externalIds instead of merging (default: false)',
+          },
+          nameVariants: {
+            type: 'array',
+            items: { type: 'string' },
+            description: 'Alternative names / billing strings that mean THIS artist (e.g., "Pv Rocks" for "Poole Vigilantes"). Additive merge by default - new variants are added to existing list.',
+          },
+          replaceNameVariants: {
+            type: 'boolean',
+            description: 'If true, replace all nameVariants instead of merging (default: false)',
           },
         },
         required: ['artistId'],
