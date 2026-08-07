@@ -1,5 +1,6 @@
 // Edit Venue Tool - MCP Implementation
-// Updates an existing venue in BNDY via PUT /api/venues/:id
+// Updates an existing venue in BNDY via PUT /api/venues/:id/mcp
+// Uses MCP-specific endpoint that doesn't require authentication
 
 import { apiRequest } from '../utils/http-client.js';
 import { mergeExternalIds, normalizeExternalIds, ExternalId } from '../utils/external-ids.js';
@@ -97,9 +98,9 @@ export async function editVenue(params: EditVenueParams): Promise<string> {
       }
     }
 
-    // Call BNDY venues PUT endpoint
+    // Call BNDY venues MCP PUT endpoint (no auth required)
     const response = await apiRequest<EditVenueResponse>(
-      `/api/venues/${venueId}`,
+      `/api/venues/${venueId}/mcp`,
       'PUT',
       updatePayload
     );
