@@ -35,11 +35,19 @@ export async function apiRequest<T = any>(
 ): Promise<T> {
   const url = `${API_BASE_URL}${path}`;
 
+  const headers: Record<string, string> = {
+    'Content-Type': 'application/json',
+  };
+
+  // Service token for authenticated MCP write operations (venue creates, etc.)
+  // Read from env only - never hardcode tokens.
+  if (process.env.MCP_SERVICE_TOKEN) {
+    headers['Authorization'] = `Bearer ${process.env.MCP_SERVICE_TOKEN}`;
+  }
+
   const options: RequestInit = {
     method,
-    headers: {
-      'Content-Type': 'application/json',
-    },
+    headers,
   };
 
   if (body && (method === 'POST' || method === 'PUT' || method === 'PATCH')) {
