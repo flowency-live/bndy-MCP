@@ -28,6 +28,7 @@ import { deleteEvent } from './tools/delete-event.js';
 import { deleteArtist } from './tools/delete-artist.js';
 import { deleteVenue } from './tools/delete-venue.js';
 import { enrichVenue } from './tools/enrich-venue.js';
+import { listCaptures, getCapture, updateCaptureStatus, addCaptureNotes } from './tools/captures.js';
 // Festival tools (Phase 1a - festival-mcp-write-api-spec §2)
 import { createFestival } from './tools/create-festival.js';
 import { editFestival } from './tools/edit-festival.js';
@@ -182,17 +183,22 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
             items: {
               type: 'string',
               enum: [
-                'Rock', 'Rock n Roll', 'Grunge', 'Metal', 'Punk', 'Alternative', 'New Wave',
+                'Rock', 'Rock n Roll', 'Grunge', 'Metal', 'Punk', 'Alternative', 'New Wave', 'Hardcore',
                 'Pop', 'Indie', 'Britpop', 'Mod',
                 'Blues', 'R&B', 'Country', 'Americana',
                 'Folk', 'Soul', 'Funk', 'Motown', 'Disco',
                 'Electronic', 'Dance',
-                'Jazz', 'Classical', 'Reggae', 'Ska', 'Latin',
+                'Jazz', 'Classical', 'Reggae', 'Ska', 'Latin', 'Irish',
                 '50s', '60s', '70s', '80s', '90s', '00s',
                 'Other'
               ]
             },
             description: 'Optional array of music genres (must be from canonical list)',
+          },
+          actType: {
+            type: 'array',
+            items: { type: 'string', enum: ['originals', 'covers', 'tribute'] },
+            description: 'Whether the act plays its own material, covers, or is a tribute act. Set this on create — it is not inferable later.',
           },
           facebookUrl: {
             type: 'string',
@@ -1102,6 +1108,78 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
         required: ['festivalId', 'slotId'],
       },
     },
+    // =========================================================================
+    // CAPTURES TOOLS - Read/write mobile-captured content for processing
+    // =========================================================================
+    {
+      name: 'list_captures',
+      description: 'List captured content from mobile share intents. Use status filter to find unprocessed captures. Captures contain shared URLs/text from Facebook, web browsers, etc. that need to be processed into BNDY entities (events, venues, artists).',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          status: {
+            type: 'string',
+            enum: ['unprocessed', 'processing', 'processed', 'failed', 'ignored'],
+            description: 'Filter by status (default: all). Use "unprocessed" to find captures needing attention.',
+          },
+          limit: {
+            type: 'number',
+            description: 'Max number of captures to return (default: 50)',
+          },
+        },
+      },
+    },
+    {
+      name: 'get_capture',
+      description: 'Get a single capture by ID. Returns full details including sharedText, sharedUrl, sourceApp, and any notes.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          id: {
+            type: 'string',
+            description: 'Capture UUID',
+          },
+        },
+        required: ['id'],
+      },
+    },
+    {
+      name: 'update_capture_status',
+      description: 'Update the status of a capture. Use after processing to mark as "processed", or "ignored" if not relevant, or "failed" if processing failed.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          id: {
+            type: 'string',
+            description: 'Capture UUID',
+          },
+          status: {
+            type: 'string',
+            enum: ['unprocessed', 'processing', 'processed', 'failed', 'ignored'],
+            description: 'New status for the capture',
+          },
+        },
+        required: ['id', 'status'],
+      },
+    },
+    {
+      name: 'add_capture_notes',
+      description: 'Add notes to a capture. Use to record what was done with the capture (e.g., "Created event abc123", "Duplicate of existing event", "Not a gig listing").',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          id: {
+            type: 'string',
+            description: 'Capture UUID',
+          },
+          notes: {
+            type: 'string',
+            description: 'Notes to add to the capture',
+          },
+        },
+        required: ['id', 'notes'],
+      },
+    },
   ],
 }));
 
@@ -1372,6 +1450,51 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
             {
               type: 'text',
               text: resolveSlotResult,
+            },
+          ],
+        };
+
+      // Captures tools
+      case 'list_captures':
+        const listCapturesResult = await listCaptures(args as any);
+        return {
+          content: [
+            {
+              type: 'text',
+              text: listCapturesResult,
+            },
+          ],
+        };
+
+      case 'get_capture':
+        const getCaptureResult = await getCapture(args as any);
+        return {
+          content: [
+            {
+              type: 'text',
+              text: getCaptureResult,
+            },
+          ],
+        };
+
+      case 'update_capture_status':
+        const updateCaptureStatusResult = await updateCaptureStatus(args as any);
+        return {
+          content: [
+            {
+              type: 'text',
+              text: updateCaptureStatusResult,
+            },
+          ],
+        };
+
+      case 'add_capture_notes':
+        const addCaptureNotesResult = await addCaptureNotes(args as any);
+        return {
+          content: [
+            {
+              type: 'text',
+              text: addCaptureNotesResult,
             },
           ],
         };

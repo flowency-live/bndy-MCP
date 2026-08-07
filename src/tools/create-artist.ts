@@ -24,12 +24,26 @@ interface CreateArtistParams {
   instagramUrl?: string;
   spotifyUrl?: string;
   externalIds?: Array<{ source: string; id: string }>;
+  nameVariants?: string[];
+  actType?: Array<'originals' | 'covers' | 'tribute'>;
+  // Resolution params (Blocker #1 fix): use these when action:review was returned
+  resolveTo?: string; // Candidate id from review response - link to that existing artist
+  confirmNew?: boolean; // Confirm this is genuinely new despite shared tokens
+  // §2A.5 exception (Blocker #2 fix): for acts whose FB page name IS their billing
+  verifiedSourceName?: boolean; // Asserts name is verbatim from act's own page
 }
 
 export async function createArtist(params: CreateArtistParams): Promise<string> {
-  const { name, artistType, location, locationType, bio, profileImageUrl, genres, facebookUrl, instagramUrl, spotifyUrl, externalIds } = params;
+  const { name, artistType, location, locationType, bio, profileImageUrl, genres, facebookUrl, instagramUrl, spotifyUrl, externalIds, nameVariants, actType, resolveTo, confirmNew, verifiedSourceName } = params;
 
-  console.error(`[create_artist] find-or-create artist "${name}" (${artistType})`);
+  // Log resolution mode if applicable
+  if (resolveTo) {
+    console.error(`[create_artist] RESOLVE_TO: linking "${name}" to existing artist ${resolveTo}`);
+  } else if (confirmNew) {
+    console.error(`[create_artist] CONFIRM_NEW: creating "${name}" despite potential matches`);
+  } else {
+    console.error(`[create_artist] find-or-create artist "${name}" (${artistType})`);
+  }
 
   try {
     const normalizedExternalIds = normalizeExternalIds(externalIds || []);
@@ -46,9 +60,18 @@ export async function createArtist(params: CreateArtistParams): Promise<string> 
       instagramUrl: instagramUrl || '',
       spotifyUrl: spotifyUrl || '',
       externalIds: normalizedExternalIds,
+      // Identity resolution: these feed buildArtistUniqueKeys server-side (handler.js:2091),
+      // so they must be supplied AT CREATE or the dedup sentinel for the alias is never written.
+      ...(nameVariants?.length ? { nameVariants } : {}),
+      ...(actType?.length ? { actType } : {}),
       // AI creation flags (CRITICAL for the review queue)
       ai_created: true,
-      source: 'mcp_ai_import'
+      source: 'mcp_ai_import',
+      // Resolution params (when retrying after action:review)
+      ...(resolveTo && { resolveTo }),
+      ...(confirmNew && { confirmNew: true }),
+      // §2A.5 exception for verbatim page names
+      ...(verifiedSourceName && { verifiedSourceName: true })
     };
 
     // BUILD-008 G2 + 2026-07-27 F1: server-side resolution gate, FAIL CLOSED.
@@ -77,7 +100,7 @@ export async function createArtist(params: CreateArtistParams): Promise<string> 
         success: true,
         action: 'review',
         candidates,
-        message: `Ambiguous match for "${name}" - needs human review. Either pick a candidate's id, or (if none fit) confirm it is genuinely new. Candidates: ${candidates.map((c: any) => `${c.name} (${Math.round((c.confidence || 0) * 100)}%)`).join(', ') || 'none'}`,
+        message: `Ambiguous match for "${name}" - needs resolution. To resolve: (1) If one candidate is correct, retry with resolveTo: "<candidate-id>". (2) If none match and this is genuinely new, retry with confirmNew: true. Candidates: ${candidates.map((c: any) => `${c.name} (${c.location || 'no location'}, ${Math.round((c.confidence || 0) * 100)}%)`).join('; ') || 'none'}`,
       }, null, 2);
     }
 

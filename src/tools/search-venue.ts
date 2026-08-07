@@ -12,6 +12,23 @@ interface SearchVenueParams {
 export async function searchVenue(params: SearchVenueParams): Promise<string> {
   const { name, city } = params;
 
+  // Validate required parameters - return 400-style error instead of crashing
+  if (!name || typeof name !== 'string' || !name.trim()) {
+    return JSON.stringify({
+      found: false,
+      error: 'Missing required parameter: name',
+      message: 'The "name" parameter is required. Provide the venue name to search for.'
+    }, null, 2);
+  }
+
+  if (!city || typeof city !== 'string' || !city.trim()) {
+    return JSON.stringify({
+      found: false,
+      error: 'Missing required parameter: city',
+      message: 'The "city" parameter is required. Provide the city where the venue is located.'
+    }, null, 2);
+  }
+
   console.error(`[search_venue] Searching for "${name}" in "${city}"`);
 
   try {
