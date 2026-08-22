@@ -22,6 +22,7 @@ export interface EditEventParams {
   eventUrl?: string; // External event page URL
   notes?: string;
   isPublic?: boolean; // Whether event appears on public Frontstage map
+  isOpenMic?: boolean; // Item 13: open mic flag — the API also keeps `type` ('open-mic'|'gig') in sync
   externalIds?: Array<{ source: string; id: string }>; // External system references
   replaceExternalIds?: boolean; // If true, replace all externalIds instead of merge
   // Festival fields (Phase 1a - festival-mcp-write-api-spec §2)
@@ -85,6 +86,7 @@ export async function editEvent(params: EditEventParams): Promise<string> {
     if (updateData.eventUrl !== undefined) updatePayload.eventUrl = updateData.eventUrl;
     if (updateData.notes !== undefined) updatePayload.notes = updateData.notes;
     if (updateData.isPublic !== undefined) updatePayload.isPublic = updateData.isPublic;
+    if (updateData.isOpenMic !== undefined) updatePayload.isOpenMic = updateData.isOpenMic;
     // Festival fields (Phase 1a)
     if (updateData.festivalId !== undefined) updatePayload.festivalId = updateData.festivalId;
     if (updateData.festivalName !== undefined) updatePayload.festivalName = updateData.festivalName;

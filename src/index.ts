@@ -29,12 +29,16 @@ import { deleteArtist } from './tools/delete-artist.js';
 import { deleteVenue } from './tools/delete-venue.js';
 import { enrichVenue } from './tools/enrich-venue.js';
 import { listCaptures, getCapture, updateCaptureStatus, addCaptureNotes } from './tools/captures.js';
+import { recordRun } from './tools/record-run.js';
 // Festival tools (Phase 1a - festival-mcp-write-api-spec §2)
 import { createFestival } from './tools/create-festival.js';
 import { editFestival } from './tools/edit-festival.js';
 import { searchFestival } from './tools/search-festival.js';
 import { addLineupSlot } from './tools/add-lineup-slot.js';
 import { resolveLineupSlot } from './tools/resolve-lineup-slot.js';
+import { deleteFestival } from './tools/delete-festival.js';
+// Venue groups (Feature 19 - venue ownership)
+import { listVenueGroups, createVenueGroup } from './tools/venue-groups.js';
 
 // Initialize MCP server
 const server = new Server(
@@ -247,7 +251,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
     },
     {
       name: 'create_event',
-      description: 'Create an event in BNDY linking one or more artists to a venue on a specific date/time.',
+      description: 'Create an event in BNDY linking one or more artists to a venue on a date. startTime is OPTIONAL: omit it when the source gives no time and the server applies the RUNBOOK 5.6 default (Fri/Sat 21:00, Sun 19:00, other weekdays 20:00, afternoon 14:00). NEVER ask the user for a start time. NEVER invent one. A missing time is not a blocker.',
       inputSchema: {
         type: 'object',
         properties: {
@@ -270,11 +274,15 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
           },
           startTime: {
             type: 'string',
-            description: 'Start time in HH:MM format (24-hour, e.g., "20:00")',
+            description: 'OPTIONAL. Start time in HH:MM (24-hour). Supply it ONLY when the source states a time. If the source states no time, OMIT this field. The server then applies RUNBOOK 5.6: Fri/Sat 21:00, Sun 19:00, other weekdays 20:00. NEVER ask the user for a start time. NEVER invent one. The response returns startTimeDefaulted: true when the default was applied. Report that in the run report.',
+          },
+          afternoon: {
+            type: 'boolean',
+            description: 'Set true ONLY when the source indicates an afternoon gig. Defaults startTime to 14:00 per RUNBOOK 5.6. Ignored when startTime is supplied.',
           },
           endTime: {
             type: 'string',
-            description: 'Optional end time in HH:MM format',
+            description: 'Optional end time in HH:MM format. Defaults to 00:00 (midnight).',
           },
           title: {
             type: 'string',
@@ -283,6 +291,10 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
           isPublic: {
             type: 'boolean',
             description: 'Whether event should appear on public Frontstage map (default: false)',
+          },
+          isOpenMic: {
+            type: 'boolean',
+            description: 'Open mic night. Artists become optional (the host, if any). Stored as isOpenMic + type "open-mic".',
           },
           externalIds: {
             type: 'array',
@@ -348,12 +360,14 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
             description: 'Sort order within billing tier (0 = top)',
           },
         },
-        required: ['venueId', 'date', 'startTime'],
+        // startTime is deliberately NOT required. RUNBOOK 5.6 supplies the
+        // default so no agent ever has to ask a human or guess a time.
+        required: ['venueId', 'date'],
       },
     },
     {
       name: 'search_event',
-      description: 'Search for events by artist ID, venue ID, or festival ID. Use this to find events for a specific artist so you can update them (e.g., change venue), or to list all child events of a festival.',
+      description: 'Search for events by artist ID, venue ID, or festival ID. Defaults to today + 12 months if no date range specified.',
       inputSchema: {
         type: 'object',
         properties: {
@@ -367,15 +381,15 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
           },
           festivalId: {
             type: 'string',
-            description: 'Festival UUID to find child events for (Phase 1a)',
+            description: 'Festival UUID to find child events for',
           },
           dateFrom: {
             type: 'string',
-            description: 'Filter events from this date (YYYY-MM-DD)',
+            description: 'Filter events from this date YYYY-MM-DD (defaults to today)',
           },
           dateTo: {
             type: 'string',
-            description: 'Filter events until this date (YYYY-MM-DD)',
+            description: 'Filter events until this date YYYY-MM-DD (defaults to today + 12 months)',
           },
         },
         required: [],
@@ -648,6 +662,18 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
             },
             description: 'Social media links array with platform and url',
           },
+          facebookUrl: {
+            type: 'string',
+            description: 'Facebook page URL (convenience field, also stored in socialMediaUrls)',
+          },
+          instagramUrl: {
+            type: 'string',
+            description: 'Instagram profile URL (convenience field, also stored in socialMediaUrls)',
+          },
+          description: {
+            type: 'string',
+            description: 'Venue description text',
+          },
           facilities: {
             type: 'array',
             items: { type: 'string' },
@@ -689,6 +715,15 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
             type: 'boolean',
             description: 'If true, replace all externalIds instead of merging (default: false)',
           },
+          ownerGroupId: {
+            type: 'string',
+            description: 'Feature 19: Venue owner group UUID (e.g., Robinsons Brewery). Use list_venue_groups to find or create_venue_group to create.',
+          },
+          tenure: {
+            type: 'string',
+            enum: ['unknown', 'independent', 'owned'],
+            description: 'Feature 19: Ownership status. "owned" = owned by the group, "independent" = free house, "unknown" = not yet checked.',
+          },
         },
         required: ['venueId'],
       },
@@ -729,6 +764,45 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
       },
     },
     {
+      name: 'list_venue_groups',
+      description: 'List every venue ownership group in BNDY. Call this BEFORE create_venue_group to avoid a duplicate. Groups represent brewery estates, pubcos, chains, and operators.',
+      inputSchema: {
+        type: 'object',
+        properties: {},
+      },
+    },
+    {
+      name: 'create_venue_group',
+      description: 'Create a venue ownership group. A venue has ONE owner group. Robinsons Brewery is a brewery. Amber Taverns is a pubco. Returns existing group on duplicate (idempotent).',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          name: {
+            type: 'string',
+            description: 'Group name (e.g., "Robinsons Brewery", "Amber Taverns")',
+          },
+          groupType: {
+            type: 'string',
+            enum: ['brewery', 'pubco', 'chain', 'operator'],
+            description: 'Type of ownership. brewery = tied house estate, pubco = property company, chain = branded chain, operator = management company.',
+          },
+          website: {
+            type: 'string',
+            description: 'Group website URL (optional)',
+          },
+          facebookUrl: {
+            type: 'string',
+            description: 'Facebook page URL (optional)',
+          },
+          bio: {
+            type: 'string',
+            description: 'Short description (optional)',
+          },
+        },
+        required: ['name', 'groupType'],
+      },
+    },
+    {
       name: 'edit_event',
       description: 'Update an existing event in BNDY. Can modify artist, venue, title, date, time, description, ticket info, poster URL, etc. Use artistId to reassign events when merging duplicate artists.',
       inputSchema: {
@@ -756,7 +830,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
           },
           startTime: {
             type: 'string',
-            description: 'Start time in HH:MM format',
+            description: 'Start time in HH:MM format. Supply it ONLY from a source or from Jason. NEVER ask the user for it and NEVER invent one. To fix a wrong time, use the RUNBOOK 5.6 default: Fri/Sat 21:00, Sun 19:00, other weekdays 20:00, afternoon 14:00.',
           },
           endTime: {
             type: 'string',
@@ -797,6 +871,10 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
           isPublic: {
             type: 'boolean',
             description: 'Whether event should appear on public Frontstage map',
+          },
+          isOpenMic: {
+            type: 'boolean',
+            description: 'Set or clear the open mic flag. The API keeps the paired type attribute ("open-mic"/"gig") in sync.',
           },
           externalIds: {
             type: 'array',
@@ -856,20 +934,29 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
     },
     {
       name: 'upload_event_poster',
-      description: 'Upload an event poster image to BNDY S3 bucket. Downloads from provided URL and uploads to S3. Use the returned s3Url with edit_event to set as event poster.',
+      description: 'Upload an image to BNDY S3 bucket for an event or festival. Downloads from provided URL and uploads to S3. Use the returned s3Url with edit_event or edit_festival. Provide exactly one of eventId or festivalId.',
       inputSchema: {
         type: 'object',
         properties: {
           eventId: {
             type: 'string',
-            description: 'Event UUID (used to organize files in S3)',
+            description: 'Event UUID (mutually exclusive with festivalId)',
+          },
+          festivalId: {
+            type: 'string',
+            description: 'Festival UUID (mutually exclusive with eventId)',
           },
           imageUrl: {
             type: 'string',
             description: 'URL of the image to download and upload',
           },
+          kind: {
+            type: 'string',
+            enum: ['poster', 'logo'],
+            description: 'Image type: poster (default) or logo. Use logo for festival branding.',
+          },
         },
-        required: ['eventId', 'imageUrl'],
+        required: ['imageUrl'],
       },
     },
     {
@@ -933,13 +1020,13 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
     },
     {
       name: 'get_by_id',
-      description: 'Fetch full venue, artist, or event record by bndy UUID. Returns ALL fields including phone, website, facilities, socialMediaUrls, nameVariants, externalIds, etc. Use before edit_* to inspect current state for merge decisions.',
+      description: 'Fetch full venue, artist, event, or festival record by bndy UUID. Returns ALL fields including externalIds, lineup, stages, etc. Use before edit_* to inspect current state for merge decisions.',
       inputSchema: {
         type: 'object',
         properties: {
           entityType: {
             type: 'string',
-            enum: ['venue', 'artist', 'event'],
+            enum: ['venue', 'artist', 'event', 'festival'],
             description: 'Type of entity to fetch',
           },
           id: {
@@ -1052,16 +1139,16 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
     },
     {
       name: 'search_festival',
-      description: 'Search for festivals by name/town/dates. Returns ALL matches (not top-match-only). Dedup rule: same/near name + same town + overlapping dates = same festival; reuse it.',
+      description: 'Search for festivals by name/town/dates. All params optional - supports town-only or date-window-only queries. Returns ALL matches. Dedup rule: same/near name + same town + overlapping dates = same festival; reuse it.',
       inputSchema: {
         type: 'object',
         properties: {
-          name: { type: 'string', description: 'Festival name to search' },
-          town: { type: 'string', description: 'Town/city filter' },
-          dateFrom: { type: 'string', description: 'Filter start date YYYY-MM-DD' },
-          dateTo: { type: 'string', description: 'Filter end date YYYY-MM-DD' },
+          name: { type: 'string', description: 'Festival name to search (optional)' },
+          town: { type: 'string', description: 'Town/city filter (optional)' },
+          dateFrom: { type: 'string', description: 'Filter start date YYYY-MM-DD (optional)' },
+          dateTo: { type: 'string', description: 'Filter end date YYYY-MM-DD (optional)' },
         },
-        required: ['name'],
+        required: [],
       },
     },
     {
@@ -1106,6 +1193,17 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
           remove: { type: 'boolean', description: 'True to remove slot (act dropped from bill)' },
         },
         required: ['festivalId', 'slotId'],
+      },
+    },
+    {
+      name: 'delete_festival',
+      description: 'Delete a festival. Requires the festival to have zero child events first; refuses with child count if not. Use search_event with festivalId to check for children before calling.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          festivalId: { type: 'string', description: 'Festival UUID to delete' },
+        },
+        required: ['festivalId'],
       },
     },
     // =========================================================================
@@ -1178,6 +1276,75 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
           },
         },
         required: ['id', 'notes'],
+      },
+    },
+    // =========================================================================
+    // SOURCE RUNS TOOLS - Agent Work dashboard metrics
+    // =========================================================================
+    {
+      name: 'record_run',
+      description: 'Record a source run for the Agent Work dashboard. Call at start (status:started), end (status:completed), or on failure (status:failed). rawRows is REQUIRED for completed runs - it distinguishes "source published nothing" from "parse broke silently".',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          sourceId: {
+            type: 'string',
+            description: 'Canonical source slug from RUNBOOK §6D table (e.g., "onthecasemusic", "songkick")',
+          },
+          runId: {
+            type: 'string',
+            description: 'Unique run identifier (e.g., "2026-08-07T04-30-00Z")',
+          },
+          runDate: {
+            type: 'string',
+            description: 'Run date in YYYY-MM-DD format',
+          },
+          status: {
+            type: 'string',
+            enum: ['started', 'completed', 'failed'],
+            description: 'Run status: started (beginning), completed (success), failed (error)',
+          },
+          counts: {
+            type: 'object',
+            description: 'Run metrics (all optional numbers, zero-filled by API)',
+            properties: {
+              rawRows: { type: 'number', description: 'Rows captured from source (REQUIRED for completed runs)' },
+              validEvents: { type: 'number', description: 'Rows surviving §0 filters' },
+              parkedRows: { type: 'number', description: 'Rows skipped with reason' },
+              eventsCreated: { type: 'number', description: 'Verified event creates' },
+              venuesCreated: { type: 'number', description: 'Verified venue creates' },
+              artistsCreated: { type: 'number', description: 'Verified artist creates' },
+              venuesMatched: { type: 'number', description: 'Existing venues reused' },
+              artistsMatched: { type: 'number', description: 'Existing artists reused' },
+              eventsDeleted: { type: 'number', description: '§0.17 deletes' },
+              eventsHidden: { type: 'number', description: '§0.17 hidden' },
+              cancelled: { type: 'number', description: '§0.17 cancellations' },
+              pastDropped: { type: 'number', description: '§0.17 past events dropped' },
+              reviewItems: { type: 'number', description: 'Items raised for review' },
+            },
+          },
+          note: {
+            type: 'string',
+            description: 'Human-readable summary (max 200 chars)',
+          },
+          reportPath: {
+            type: 'string',
+            description: 'Vault path to full RUN-REPORT.md',
+          },
+          errors: {
+            type: 'array',
+            items: {
+              type: 'object',
+              properties: {
+                message: { type: 'string' },
+                code: { type: 'string' },
+              },
+              required: ['message'],
+            },
+            description: 'Error details for failed runs',
+          },
+        },
+        required: ['sourceId', 'runId', 'runDate', 'status', 'counts'],
       },
     },
   ],
@@ -1321,6 +1488,28 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
           ],
         };
 
+      case 'list_venue_groups':
+        const listGroupsResult = await listVenueGroups();
+        return {
+          content: [
+            {
+              type: 'text',
+              text: listGroupsResult,
+            },
+          ],
+        };
+
+      case 'create_venue_group':
+        const createGroupResult = await createVenueGroup(args as any);
+        return {
+          content: [
+            {
+              type: 'text',
+              text: createGroupResult,
+            },
+          ],
+        };
+
       case 'edit_event':
         const eventEditResult = await editEvent(args as any);
         return {
@@ -1454,6 +1643,17 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
           ],
         };
 
+      case 'delete_festival':
+        const deleteFestivalResult = await deleteFestival(args as any);
+        return {
+          content: [
+            {
+              type: 'text',
+              text: deleteFestivalResult,
+            },
+          ],
+        };
+
       // Captures tools
       case 'list_captures':
         const listCapturesResult = await listCaptures(args as any);
@@ -1495,6 +1695,18 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
             {
               type: 'text',
               text: addCaptureNotesResult,
+            },
+          ],
+        };
+
+      // Source runs tools
+      case 'record_run':
+        const recordRunResult = await recordRun(args as any);
+        return {
+          content: [
+            {
+              type: 'text',
+              text: recordRunResult,
             },
           ],
         };

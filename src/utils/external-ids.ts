@@ -40,28 +40,42 @@ export function normalizeExternalIds(externalIds: ExternalId[]): ExternalId[] {
 
 /**
  * Merges incoming external IDs with existing ones.
- * Deduplicates by source+id combination.
+ *
+ * FIX 2026-08-19: Keys on (source, id) tuple, NOT source alone.
+ * A venue can have multiple IDs from the same source (e.g., klma:venue-123 AND
+ * klma-stoke-gig-list:venue-456). The old implementation keyed on source only,
+ * so adding a second klma ID replaced the first. This broke live data.
+ *
+ * Deduplication: exact (source, id) pairs are deduplicated; different IDs from
+ * the same source coexist.
  *
  * @param existing - Current external IDs on the entity
  * @param incoming - New external IDs to add
- * @returns Merged array with no duplicates
+ * @returns Merged array with unique (source, id) pairs
  */
 export function mergeExternalIds(
   existing: ExternalId[],
   incoming: ExternalId[]
 ): ExternalId[] {
-  const merged = [...existing];
+  // Key on (source, id) tuple to allow multiple IDs from same source
+  const byKey = new Map<string, ExternalId>();
 
-  for (const newId of incoming) {
-    const isDuplicate = merged.some(
-      e => e.source === newId.source && e.id === newId.id
-    );
-    if (!isDuplicate) {
-      merged.push(newId);
-    }
+  // Add existing entries
+  for (const ext of existing) {
+    const key = `${ext.source}:${ext.id}`;
+    byKey.set(key, ext);
   }
 
-  return merged;
+  // Add incoming - only dedups exact (source, id) matches
+  for (const newId of incoming) {
+    const key = `${newId.source}:${newId.id}`;
+    if (!byKey.has(key)) {
+      console.error(`[externalId] Adding ${key}`);
+    }
+    byKey.set(key, newId);
+  }
+
+  return Array.from(byKey.values());
 }
 
 /**

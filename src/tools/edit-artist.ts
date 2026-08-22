@@ -24,6 +24,8 @@ export interface EditArtistParams {
   actType?: ('originals' | 'covers' | 'tribute')[];
   externalIds?: Array<{ source: string; id: string }>;
   replaceExternalIds?: boolean;
+  nameVariants?: string[];
+  replaceNameVariants?: boolean;
 }
 
 interface EditArtistResponse {
@@ -91,6 +93,28 @@ export async function editArtist(params: EditArtistParams): Promise<string> {
         // API returns external_ids (snake_case), handle both formats
         const existingIds: ExternalId[] = currentArtist.externalIds || currentArtist.external_ids || [];
         updatePayload.externalIds = mergeExternalIds(existingIds, normalizedIncoming);
+      }
+    }
+
+    // Handle nameVariants with additive merge (default) or replace
+    if (updateData.nameVariants !== undefined) {
+      if (updateData.replaceNameVariants) {
+        // Replace mode: send array as-is
+        updatePayload.nameVariants = updateData.nameVariants;
+      } else {
+        // Additive merge mode: fetch current artist and merge unique
+        const currentArtist = await apiRequest<any>(`/api/artists/${artistId}`, 'GET');
+        const existingVariants: string[] = currentArtist.nameVariants || currentArtist.name_variants || [];
+        // Merge and deduplicate (case-insensitive)
+        const existingLower = new Set(existingVariants.map(v => v.toLowerCase()));
+        const merged = [...existingVariants];
+        for (const variant of updateData.nameVariants) {
+          if (!existingLower.has(variant.toLowerCase())) {
+            merged.push(variant);
+            existingLower.add(variant.toLowerCase());
+          }
+        }
+        updatePayload.nameVariants = merged;
       }
     }
 

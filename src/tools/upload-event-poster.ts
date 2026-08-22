@@ -1,11 +1,14 @@
 // Upload Event Poster Tool - MCP Implementation
 // Downloads an image from URL and uploads it to BNDY S3 bucket
+// Supports both events and festivals, with kind='poster' (default) or 'logo'
 
 import { S3Client, PutObjectCommand } from '@aws-sdk/client-s3';
 
 export interface UploadEventPosterParams {
-  eventId: string;
+  eventId?: string;
+  festivalId?: string;
   imageUrl: string;
+  kind?: 'poster' | 'logo';
 }
 
 // S3 configuration
@@ -32,14 +35,22 @@ const ALLOWED_CONTENT_TYPES = [
 ];
 
 export async function uploadEventPoster(params: UploadEventPosterParams): Promise<string> {
-  const { eventId, imageUrl } = params;
+  const { eventId, festivalId, imageUrl, kind = 'poster' } = params;
 
-  // Validate required fields
-  if (!eventId) {
+  // Validate: require exactly one of eventId or festivalId
+  if (!eventId && !festivalId) {
     return JSON.stringify({
       success: false,
-      error: 'eventId is required',
-      message: 'You must provide an eventId to upload a poster',
+      error: 'eventId or festivalId is required',
+      message: 'You must provide an eventId or festivalId to upload a poster',
+    }, null, 2);
+  }
+
+  if (eventId && festivalId) {
+    return JSON.stringify({
+      success: false,
+      error: 'Provide only one of eventId or festivalId, not both',
+      message: 'eventId and festivalId are mutually exclusive',
     }, null, 2);
   }
 
@@ -51,7 +62,9 @@ export async function uploadEventPoster(params: UploadEventPosterParams): Promis
     }, null, 2);
   }
 
-  console.error(`[upload_event_poster] Uploading poster for event: ${eventId}`);
+  const entityType = festivalId ? 'festival' : 'event';
+  const entityId = festivalId || eventId!;
+  console.error(`[upload_event_poster] Uploading ${kind} for ${entityType}: ${entityId}`);
   console.error(`[upload_event_poster] Source URL: ${imageUrl.substring(0, 100)}`);
 
   try {
@@ -96,21 +109,27 @@ export async function uploadEventPoster(params: UploadEventPosterParams): Promis
     // Step 2: Generate S3 key
     const timestamp = Date.now();
     const fileExtension = getExtensionFromContentType(contentType);
-    const s3Key = `event-posters/${eventId}/${timestamp}-poster.${fileExtension}`;
+    // Use appropriate folder: event-posters or festival-images
+    const folder = festivalId ? 'festival-images' : 'event-posters';
+    const s3Key = `${folder}/${entityId}/${timestamp}-${kind}.${fileExtension}`;
 
     console.error(`[upload_event_poster] Uploading to S3: ${s3Key}`);
 
     // Step 3: Upload to S3
+    const metadata: Record<string, string> = {
+      'source': 'mcp_upload',
+      'kind': kind,
+      'original-url': imageUrl.substring(0, 500),
+    };
+    if (eventId) metadata['event-id'] = eventId;
+    if (festivalId) metadata['festival-id'] = festivalId;
+
     const putCommand = new PutObjectCommand({
       Bucket: BUCKET_NAME,
       Key: s3Key,
       Body: imageData,
       ContentType: contentType,
-      Metadata: {
-        'event-id': eventId,
-        'source': 'mcp_upload',
-        'original-url': imageUrl.substring(0, 500),
-      },
+      Metadata: metadata,
     });
 
     await getS3Client().send(putCommand);
@@ -120,14 +139,19 @@ export async function uploadEventPoster(params: UploadEventPosterParams): Promis
     console.error(`[upload_event_poster] Upload successful: ${s3Url}`);
 
     // Return success response
+    const editTool = festivalId ? 'edit_festival' : 'edit_event';
+    const imageField = kind === 'logo' ? 'logoUrl' : 'imageUrl';
     return JSON.stringify({
       success: true,
       s3Url,
       s3Key,
       contentType,
       fileSize: imageData.length,
-      message: `Event poster uploaded successfully for event ${eventId}`,
-      note: 'Remember to update the event with this imageUrl using edit_event tool',
+      kind,
+      entityType,
+      entityId,
+      message: `${kind.charAt(0).toUpperCase() + kind.slice(1)} uploaded successfully for ${entityType} ${entityId}`,
+      note: `Remember to update the ${entityType} with ${imageField}="${s3Url}" using ${editTool} tool`,
     }, null, 2);
 
   } catch (error: unknown) {

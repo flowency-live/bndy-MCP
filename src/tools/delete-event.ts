@@ -1,8 +1,9 @@
 // Delete Event Tool - MCP Implementation
-// Permanently removes an event from BNDY
-// WORKAROUND: Backend has no DELETE /api/events/:id/mcp endpoint, so we:
-// 1. GET /api/events/:id/mcp to fetch artistIds
-// 2. DELETE /api/artists/:artistId/events/:id using first artistId
+// Calls the unauthenticated DELETE /api/events/:id/mcp route (bndy-serverless-api BUILD-008 G1).
+// Previously this used a 401-prone workaround (GET event -> DELETE /api/artists/:artistId/events/:id),
+// because that authed route sits behind requireAuth and the MCP has no token. The /mcp delete route
+// fixes that. Safety: the backend only deletes SOURCE-IMPORTED events (those with external_ids);
+// app/human-created gigs return 403 and must be deleted via Backstage.
 
 import { apiRequest } from '../utils/http-client.js';
 
@@ -10,15 +11,9 @@ export interface DeleteEventParams {
   eventId: string;
 }
 
-interface EventDetailsResponse {
-  id: string;
-  artistIds?: string[];
-  artistId?: string;
-  title: string;
-}
-
 interface DeleteEventResponse {
   message: string;
+  id?: string;
 }
 
 export async function deleteEvent(params: DeleteEventParams): Promise<string> {
@@ -33,58 +28,41 @@ export async function deleteEvent(params: DeleteEventParams): Promise<string> {
     }, null, 2);
   }
 
-  console.error(`[delete_event] Deleting event: ${eventId}`);
+  console.error(`[delete_event] Deleting event via /mcp: ${eventId}`);
 
   try {
-    // Step 1: GET event details to retrieve artistId(s)
-    console.error(`[delete_event] Fetching event details to get artistId...`);
-    const eventDetails = await apiRequest<EventDetailsResponse>(
-      `/api/events/${eventId}/mcp`,
-      'GET'
-    );
-
-    // Extract artistId (prefer artistIds array, fallback to artistId field)
-    const artistId = (eventDetails.artistIds && eventDetails.artistIds.length > 0)
-      ? eventDetails.artistIds[0]
-      : eventDetails.artistId;
-
-    if (!artistId) {
-      return JSON.stringify({
-        success: false,
-        error: 'NO_ARTIST_ID',
-        message: `Event ${eventId} has no associated artist. Cannot delete via MCP.`,
-      }, null, 2);
-    }
-
-    console.error(`[delete_event] Found artistId: ${artistId}, proceeding with deletion...`);
-
-    // Step 2: DELETE using artist-scoped endpoint
-    // Backend route: DELETE /api/artists/:artistId/events/:id
     const response = await apiRequest<DeleteEventResponse>(
-      `/api/artists/${artistId}/events/${eventId}`,
+      `/api/events/${eventId}/mcp`,
       'DELETE'
     );
 
     console.error(`[delete_event] Successfully deleted event: ${eventId}`);
 
-    // Return formatted response
     return JSON.stringify({
       success: true,
       deletedEventId: eventId,
-      artistId,
-      message: response.message || `Event "${eventDetails.title}" has been permanently removed.`,
+      message: response.message || `Event ${eventId} has been permanently removed.`,
     }, null, 2);
 
   } catch (error: unknown) {
     const errorMessage = error instanceof Error ? error.message : 'Unknown error';
     console.error(`[delete_event] Error:`, error);
 
-    // Check if it's a 404 (event not found)
+    // 403: backend refused because the event is not source-imported (no external_ids)
+    if (errorMessage.includes('403')) {
+      return JSON.stringify({
+        success: false,
+        error: 'NOT_SOURCE_IMPORTED',
+        message: `Event ${eventId} is not source-imported (no external_ids). MCP delete is restricted to source-imported events; delete app/human-created gigs via Backstage.`,
+      }, null, 2);
+    }
+
+    // 404: event missing, OR the DELETE /api/events/:id/mcp route isn't deployed yet (G1).
     if (errorMessage.includes('404')) {
       return JSON.stringify({
         success: false,
         error: 'EVENT_NOT_FOUND',
-        message: `Event ${eventId} not found. It may have already been deleted or you may not have permission to delete it.`,
+        message: `Event ${eventId} not found (or the DELETE /api/events/:id/mcp route is not yet deployed - bndy-serverless-api BUILD-008 G1).`,
       }, null, 2);
     }
 

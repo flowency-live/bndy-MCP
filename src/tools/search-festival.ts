@@ -5,7 +5,7 @@
 import { apiRequest } from '../utils/http-client.js';
 
 interface SearchFestivalParams {
-  name: string;
+  name?: string;
   town?: string;
   dateFrom?: string; // YYYY-MM-DD
   dateTo?: string; // YYYY-MM-DD
@@ -29,25 +29,26 @@ interface SearchResponse {
 export async function searchFestival(params: SearchFestivalParams): Promise<string> {
   const { name, town, dateFrom, dateTo } = params;
 
-  console.error(`[search_festival] Searching: name=${name}, town=${town || 'any'}`);
+  // Build search description for logging and messages
+  const criteria: string[] = [];
+  if (name) criteria.push(`name=${name}`);
+  if (town) criteria.push(`town=${town}`);
+  if (dateFrom) criteria.push(`from=${dateFrom}`);
+  if (dateTo) criteria.push(`to=${dateTo}`);
+  const searchDesc = criteria.length > 0 ? criteria.join(', ') : 'all';
 
-  if (!name) {
-    return JSON.stringify({
-      success: false,
-      error: 'name is required',
-      message: 'Festival name is required for search'
-    }, null, 2);
-  }
+  console.error(`[search_festival] Searching: ${searchDesc}`);
 
   try {
-    // Build query params
+    // Build query params - all optional, lambda accepts any combination
     const queryParams = new URLSearchParams();
-    queryParams.set('name', name);
+    if (name) queryParams.set('name', name);
     if (town) queryParams.set('town', town);
     if (dateFrom) queryParams.set('dateFrom', dateFrom);
     if (dateTo) queryParams.set('dateTo', dateTo);
 
-    const response = await apiRequest<SearchResponse>(`/festivals?${queryParams.toString()}`);
+    const queryString = queryParams.toString();
+    const response = await apiRequest<SearchResponse>(`/festivals${queryString ? `?${queryString}` : ''}`);
 
     const festivals = response.festivals || [];
 
@@ -57,7 +58,7 @@ export async function searchFestival(params: SearchFestivalParams): Promise<stri
       return JSON.stringify({
         success: true,
         festivals: [],
-        message: `No festivals found matching "${name}"`,
+        message: `No festivals found (${searchDesc})`,
         note: 'If this is a new festival, use create_festival. Remember: same/near name + same town + overlapping dates = same festival; reuse it.'
       }, null, 2);
     }
@@ -76,7 +77,7 @@ export async function searchFestival(params: SearchFestivalParams): Promise<stri
         actCount: f.actCount || 0
       })),
       count: festivals.length,
-      message: `Found ${festivals.length} festival(s) matching "${name}"`,
+      message: `Found ${festivals.length} festival(s) (${searchDesc})`,
       dedupRule: 'Same/near name + same town + overlapping dates = same festival; reuse the existing one via edit_festival instead of creating a duplicate.'
     }, null, 2);
 

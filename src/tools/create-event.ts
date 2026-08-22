@@ -3,16 +3,21 @@
 
 import { apiRequest, ApiError } from '../utils/http-client.js';
 import { normalizeExternalIds } from '../utils/external-ids.js';
+import { resolveStartTime, DEFAULT_END_TIME, START_TIME_RULE } from '../utils/event-defaults.js';
 
 interface CreateEventParams {
   artistId?: string; // Single artist (backward compat)
   artistIds?: string[]; // Multiple artists (preferred)
   venueId: string;
   date: string; // YYYY-MM-DD
-  startTime: string; // HH:MM (24-hour)
+  // OPTIONAL. Omit it when the source gives no time. RUNBOOK §5.6 supplies the
+  // default. NEVER ask a human for this value, and NEVER invent one.
+  startTime?: string; // HH:MM (24-hour)
+  afternoon?: boolean; // Source indicates an afternoon gig. Defaults startTime to 14:00.
   endTime?: string;
   title?: string;
   isPublic?: boolean;
+  isOpenMic?: boolean; // Item 13: open mic night — artists optional when true; API stores type 'open-mic'
   externalIds?: Array<{ source: string; id: string }>;
   // Enrichment fields (parity with edit_event)
   price?: string; // e.g. "FREE", "£15"
@@ -46,7 +51,7 @@ interface CreateEventResponse {
 
 export async function createEvent(params: CreateEventParams): Promise<string> {
   const {
-    artistId, artistIds, venueId, date, startTime, endTime, title, isPublic, externalIds,
+    artistId, artistIds, venueId, date, startTime, afternoon, endTime, title, isPublic, isOpenMic, externalIds,
     price, eventUrl, ticketed, ticketInformation, ticketUrl, imageUrl, description, notes,
     festivalId, stageId, billing, billingOrder
   } = params;
@@ -54,7 +59,12 @@ export async function createEvent(params: CreateEventParams): Promise<string> {
   // Build artistIds array from either artistIds or artistId
   const resolvedArtistIds = artistIds || (artistId ? [artistId] : []);
 
-  console.error(`[create_event] Creating event: artists=${resolvedArtistIds.length}, venue=${venueId}, date=${date}`);
+  // RUNBOOK §5.6. A missing start time is normal, not an error. The default is
+  // deterministic, so no agent needs to ask a human or guess a value.
+  const { startTime: resolvedStartTime, defaulted: startTimeDefaulted } =
+    resolveStartTime(date, startTime, afternoon);
+
+  console.error(`[create_event] Creating event: artists=${resolvedArtistIds.length}, venue=${venueId}, date=${date}, startTime=${resolvedStartTime}${startTimeDefaulted ? ' (defaulted)' : ''}`);
 
   try {
     // Normalize incoming externalIds to strip any doubled prefixes
@@ -65,8 +75,10 @@ export async function createEvent(params: CreateEventParams): Promise<string> {
       artistIds: resolvedArtistIds,
       venueId,
       date,
-      startTime,
-      endTime: endTime || '',
+      startTime: resolvedStartTime,
+      // Persist whether the time came from a source or from RUNBOOK 5.6.
+      ...(startTimeDefaulted && { startTimeDefaulted: true }),
+      endTime: endTime || DEFAULT_END_TIME,
       title: title || undefined,
       isPublic: isPublic !== undefined ? isPublic : false,
       externalIds: normalizedExternalIds,
@@ -77,6 +89,9 @@ export async function createEvent(params: CreateEventParams): Promise<string> {
       ai_created: true,
       needs_review: true
     };
+
+    // Item 13: open mic — artists optional when set; API titles it "Open Mic @ {venue}"
+    if (isOpenMic !== undefined) eventData.isOpenMic = isOpenMic;
 
     // Add enrichment fields if provided (parity with edit_event)
     if (price !== undefined) eventData.price = price;
@@ -107,7 +122,11 @@ export async function createEvent(params: CreateEventParams): Promise<string> {
         title: response.event.title,
         date: response.event.date,
         startTime: response.event.startTime,
-        endTime: endTime || 'Not specified',
+        endTime: endTime || DEFAULT_END_TIME,
+        // Item 5.6: flag a defaulted time so the run report can list it and
+        // Jason can correct it. A defaulted time is never presented as sourced.
+        startTimeDefaulted,
+        ...(startTimeDefaulted && { startTimeDefaultRule: START_TIME_RULE }),
         artistId: response.event.artistId,
         artistIds: response.event.artistIds || resolvedArtistIds,
         artistNames: response.event.artistNames || [],
@@ -131,7 +150,9 @@ export async function createEvent(params: CreateEventParams): Promise<string> {
         aiCreated: true,
         needsReview: true
       },
-      message: `Event "${response.event.title}" created successfully on ${date} at ${startTime}.`,
+      message: `Event "${response.event.title}" created successfully on ${date} at ${resolvedStartTime}.${
+        startTimeDefaulted ? ` Start time DEFAULTED (${START_TIME_RULE}). Report it as a defaulted time.` : ''
+      }`,
       note: isPublic
         ? 'Event is PUBLIC and will appear on the Frontstage map.'
         : 'Event is PRIVATE (Backstage only).'

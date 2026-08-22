@@ -35,7 +35,7 @@ describe('editVenue', () => {
     expect(parsed.success).toBe(true);
     expect(parsed.venue.website).toBe('https://thepub.co.uk');
     expect(mockApiRequest).toHaveBeenCalledWith(
-      '/api/venues/test-venue-123',
+      '/api/venues/test-venue-123/mcp',
       'PUT',
       expect.objectContaining({ website: 'https://thepub.co.uk' })
     );
@@ -64,7 +64,7 @@ describe('editVenue', () => {
 
     expect(parsed.success).toBe(true);
     expect(mockApiRequest).toHaveBeenCalledWith(
-      '/api/venues/test-venue-123',
+      '/api/venues/test-venue-123/mcp',
       'PUT',
       expect.objectContaining({
         socialMediaUrls: [

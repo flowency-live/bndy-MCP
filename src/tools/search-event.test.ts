@@ -51,8 +51,9 @@ describe('searchEvent', () => {
     expect(parsed.events).toHaveLength(2);
     expect(parsed.events[0].id).toBe('event-001');
     expect(parsed.events[0].venueId).toBe('venue-456');
+    // Now includes default date params (today + 12 months)
     expect(mockApiRequest).toHaveBeenCalledWith(
-      '/api/artists/artist-123/public-events',
+      expect.stringMatching(/^\/api\/artists\/artist-123\/public-events\?startDate=.*&endDate=.*/),
       'GET'
     );
   });
@@ -119,8 +120,9 @@ describe('searchEvent', () => {
 
     expect(parsed.found).toBe(true);
     expect(parsed.events[0].artistName).toBe('The Band');
+    // Now includes default date params (today + 12 months)
     expect(mockApiRequest).toHaveBeenCalledWith(
-      '/api/venues/venue-456/events',
+      expect.stringMatching(/^\/api\/venues\/venue-456\/events\?startDate=.*&endDate=.*/),
       'GET'
     );
   });
@@ -146,7 +148,7 @@ describe('searchEvent', () => {
     const parsed = JSON.parse(result);
 
     expect(parsed.found).toBe(false);
-    expect(parsed.error).toContain('artistId or venueId');
+    expect(parsed.error).toContain('artistId, venueId, or festivalId');
   });
 
   it('should include venue and artist details in results', async () => {

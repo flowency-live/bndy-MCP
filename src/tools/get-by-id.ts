@@ -1,10 +1,10 @@
 // Get By ID Tool - MCP Implementation
-// Fetches full venue, artist, or event record by bndy UUID
+// Fetches full venue, artist, event, or festival record by bndy UUID
 
 import { apiRequest } from '../utils/http-client.js';
 
 export interface GetByIdParams {
-  entityType: 'venue' | 'artist' | 'event';
+  entityType: 'venue' | 'artist' | 'event' | 'festival';
   id: string; // bndy UUID
 }
 
@@ -21,11 +21,11 @@ export async function getById(params: GetByIdParams): Promise<string> {
   }
 
   // Validate entityType
-  if (!['venue', 'artist', 'event'].includes(entityType)) {
+  if (!['venue', 'artist', 'event', 'festival'].includes(entityType)) {
     return JSON.stringify({
       found: false,
-      error: `Invalid entityType: "${entityType}". Must be "venue", "artist", or "event"`,
-      message: 'entityType must be one of: venue, artist, event',
+      error: `Invalid entityType: "${entityType}". Must be "venue", "artist", "event", or "festival"`,
+      message: 'entityType must be one of: venue, artist, event, festival',
     }, null, 2);
   }
 
@@ -34,10 +34,16 @@ export async function getById(params: GetByIdParams): Promise<string> {
   try {
     // Build the lookup URL
     // Events use the MCP endpoint (no auth required): /api/events/{id}/mcp
+    // Festivals use direct ID endpoint: /api/festivals/{id}
     // Venues and artists use their standard endpoints (also public)
-    const lookupUrl = entityType === 'event'
-      ? `/api/events/${encodeURIComponent(id)}/mcp`
-      : `/api/${entityType}s/${encodeURIComponent(id)}`;
+    let lookupUrl: string;
+    if (entityType === 'event') {
+      lookupUrl = `/api/events/${encodeURIComponent(id)}/mcp`;
+    } else if (entityType === 'festival') {
+      lookupUrl = `/api/festivals/${encodeURIComponent(id)}`;
+    } else {
+      lookupUrl = `/api/${entityType}s/${encodeURIComponent(id)}`;
+    }
 
     // Call the BNDY API endpoint
     const entity = await apiRequest<Record<string, unknown>>(lookupUrl, 'GET');
@@ -79,6 +85,12 @@ export async function getById(params: GetByIdParams): Promise<string> {
           standardTicketUrl: entity.standardTicketUrl || entity.standard_ticket_url,
           standardTicketInformation: entity.standardTicketInformation || entity.standard_ticket_information,
           validated: entity.validated,
+          // Feature 19: ownership. Without these three an importer cannot verify
+          // its own write, and a read-then-write caller cannot tell an unassigned
+          // venue from one it already assigned.
+          ownerGroupId: entity.ownerGroupId || entity.owner_group_id,
+          ownerGroupName: entity.ownerGroupName || entity.owner_group_name,
+          tenure: entity.tenure,
           aiCreated: entity.ai_created,
           needsReview: entity.needs_review,
           createdSource: entity.created_source,
@@ -118,6 +130,39 @@ export async function getById(params: GetByIdParams): Promise<string> {
           updatedAt: entity.updatedAt || entity.updated_at,
         },
         message: `Found artist "${entity.name}"`,
+      }, null, 2);
+    }
+
+    if (entityType === 'festival') {
+      return JSON.stringify({
+        found: true,
+        entityType: 'festival',
+        festival: {
+          id: entity.id,
+          slug: entity.slug,
+          name: entity.name,
+          startDate: entity.startDate || entity.start_date,
+          endDate: entity.endDate || entity.end_date,
+          description: entity.description,
+          town: entity.town,
+          primaryVenueId: entity.primaryVenueId || entity.primary_venue_id,
+          venueIds: entity.venueIds || entity.venue_ids || [],
+          stages: entity.stages || [],
+          lineup: entity.lineup || [],
+          ticketed: entity.ticketed,
+          price: entity.price,
+          ticketUrl: entity.ticketUrl || entity.ticket_url,
+          lineupUrl: entity.lineupUrl || entity.lineup_url,
+          websiteUrl: entity.websiteUrl || entity.website_url,
+          posterImageUrl: entity.posterImageUrl || entity.poster_image_url,
+          heroImageUrl: entity.heroImageUrl || entity.hero_image_url,
+          theme: entity.theme,
+          isPublic: entity.isPublic ?? entity.is_public ?? false,
+          externalIds: entity.externalIds || entity.external_ids || [],
+          createdAt: entity.createdAt || entity.created_at,
+          updatedAt: entity.updatedAt || entity.updated_at,
+        },
+        message: `Found festival "${entity.name}"`,
       }, null, 2);
     }
 
