@@ -49,6 +49,9 @@ jobs:
       - name: Typecheck
         run: npm run check
 
+      - name: MCP integration tests
+        run: npm test
+
       - name: Bundle Lambda
         run: npm run build
 
