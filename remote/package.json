@@ -5,6 +5,7 @@
   "type": "module",
   "scripts": {
     "check": "tsc --noEmit",
+    "test": "rm -rf .test-dist && esbuild test/remote.test.ts --bundle --platform=node --target=node22 --format=esm --outfile=.test-dist/remote.test.mjs && node --test .test-dist/remote.test.mjs",
     "build": "rm -rf dist && esbuild src/lambda.ts --bundle --platform=node --target=node22 --format=esm --outfile=dist/lambda.mjs",
     "sam:validate": "sam validate --lint -t template.yaml",
     "sam:build": "sam build -t template.yaml"
@@ -14,6 +15,7 @@
     "zod": "^4.0.0"
   },
   "devDependencies": {
+    "@modelcontextprotocol/client": "^2.0.0",
     "@types/aws-lambda": "^8.10.152",
     "@types/node": "^22.0.0",
     "esbuild": "^0.25.0",
