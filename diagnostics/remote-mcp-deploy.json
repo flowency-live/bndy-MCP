@@ -1,0 +1,13 @@
+{
+  "service": "bndy-remote-mcp",
+  "recordedAt": "2026-08-24T08:01:58Z",
+  "sourceSha": "5bedc487fc70241d168821021ebf53a69fb482b7",
+  "awsCredentials": "success",
+  "deployment": "success",
+  "smokeTest": "success",
+  "liveMcpTest": "success",
+  "mcpEndpoint": "https://f7x3estvgki4mfh6o7xs27jtdy0lztoz.lambda-url.eu-west-2.on.aws/mcp",
+  "healthEndpoint": "https://f7x3estvgki4mfh6o7xs27jtdy0lztoz.lambda-url.eu-west-2.on.aws/health",
+  "clientTokenSecret": "bndy/remote-mcp",
+  "deploymentIdentity": "GitHub OIDC"
+}
