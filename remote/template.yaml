@@ -3,17 +3,6 @@ Transform: AWS::Serverless-2016-10-31
 Description: BNDY remote MCP endpoint for authenticated ChatGPT write access
 
 Resources:
-  RemoteMcpTokenSecret:
-    Type: AWS::SecretsManager::Secret
-    Properties:
-      Name: bndy/remote-mcp
-      Description: Bearer credential used by remote MCP clients such as ChatGPT
-      GenerateSecretString:
-        SecretStringTemplate: '{}'
-        GenerateStringKey: token
-        PasswordLength: 64
-        ExcludePunctuation: true
-
   RemoteMcpFunction:
     Type: AWS::Serverless::Function
     Properties:
@@ -24,6 +13,7 @@ Resources:
         - arm64
       CodeUri: dist/
       Handler: lambda.handler
+      Role: arn:aws:iam::771551874768:role/bndy-remote-mcp-execution-role
       MemorySize: 512
       Timeout: 30
       Environment:
@@ -31,7 +21,7 @@ Resources:
           NODE_ENV: production
           BNDY_API_BASE_URL: https://api.bndy.co.uk
           BNDY_MCP_SERVICE_TOKEN: '{{resolve:secretsmanager:bndy/mcp-service:SecretString:token}}'
-          BNDY_REMOTE_MCP_TOKEN: !Sub '{{resolve:secretsmanager:${RemoteMcpTokenSecret}:SecretString:token}}'
+          BNDY_REMOTE_MCP_TOKEN: '{{resolve:secretsmanager:bndy/remote-mcp:SecretString:token}}'
       FunctionUrlConfig:
         AuthType: NONE
         InvokeMode: RESPONSE_STREAM
@@ -43,6 +33,6 @@ Outputs:
   RemoteMcpFunctionUrl:
     Description: Base HTTPS endpoint for the BNDY remote MCP
     Value: !GetAtt RemoteMcpFunctionUrl.FunctionUrl
-  RemoteMcpSecretArn:
-    Description: Secrets Manager ARN containing the ChatGPT-facing bearer token
-    Value: !Ref RemoteMcpTokenSecret
+  RemoteMcpSecretName:
+    Description: Secrets Manager secret containing the ChatGPT-facing bearer token
+    Value: bndy/remote-mcp
