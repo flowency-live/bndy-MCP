@@ -6,6 +6,7 @@
   "scripts": {
     "check": "tsc --noEmit",
     "test": "rm -rf .test-dist && esbuild test/remote.test.ts --bundle --platform=node --target=node22 --format=esm --outfile=.test-dist/remote.test.mjs && node --test .test-dist/remote.test.mjs",
+    "test:live": "rm -rf .live-test-dist && esbuild test/live-acceptance.ts --bundle --platform=node --target=node22 --format=esm --outfile=.live-test-dist/live-acceptance.mjs && node .live-test-dist/live-acceptance.mjs",
     "build": "rm -rf dist && esbuild src/lambda.ts --bundle --platform=node --target=node22 --format=esm --outfile=dist/lambda.mjs",
     "sam:validate": "sam validate --lint -t template.yaml",
     "sam:build": "sam build -t template.yaml"
