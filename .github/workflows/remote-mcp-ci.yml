@@ -17,6 +17,7 @@ permissions:
 
 env:
   AWS_REGION: eu-west-2
+  AWS_DEFAULT_REGION: eu-west-2
   NODE_VERSION: '22'
   SAM_CLI_TELEMETRY: '0'
 
@@ -52,7 +53,7 @@ jobs:
         run: npm run build
 
       - name: Validate SAM template
-        run: sam validate -t template.yaml
+        run: sam validate -t template.yaml --region "$AWS_REGION"
 
       - name: SAM build
         run: sam build -t template.yaml
