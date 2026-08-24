@@ -98,6 +98,7 @@ jobs:
           role-to-assume: ${{ env.AWS_DEPLOY_ROLE }}
           role-session-name: bndy-remote-mcp-${{ github.run_id }}
           aws-region: ${{ env.AWS_REGION }}
+          retry-max-attempts: 2
 
       - name: Install dependencies
         run: npm install
