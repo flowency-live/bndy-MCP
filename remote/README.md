@@ -36,21 +36,32 @@ There are two separate bearer credentials:
 
 They are deliberately different.
 
-The SAM stack creates `bndy/remote-mcp` in AWS Secrets Manager and generates a 64-character client token automatically. The existing backend token is read from `bndy/mcp-service` through a CloudFormation Secrets Manager dynamic reference. Neither secret is committed to GitHub or written to CI logs.
+The one-time bootstrap stack creates `bndy/remote-mcp` in AWS Secrets Manager and generates a 64-character client token automatically. The existing backend token remains in `bndy/mcp-service`. Neither secret is committed to GitHub or written to CI logs.
 
-The Lambda execution role is the SAM-generated basic Lambda role only. It does not receive DynamoDB, BNDY Lambda, or application Secrets Manager read permissions at runtime; CloudFormation resolves the secret values into the Lambda configuration during deployment.
+GitHub does not store a long-lived AWS access key for this service. Deployments use GitHub Actions OIDC to assume `bndy-remote-mcp-github-deploy`, whose trust policy is restricted to `flowency-live/bndy-MCP` on `refs/heads/main`.
 
-The Function URL uses `AuthType: NONE` because ChatGPT cannot sign AWS IAM requests. Application-level bearer authentication is mandatory for `/mcp`. `/health` contains no sensitive data.
+The Lambda uses the fixed `bndy-remote-mcp-execution-role`, which has only the AWS managed basic Lambda logging policy. It has no DynamoDB, BNDY Lambda or Secrets Manager runtime permissions. CloudFormation resolves the two secret values into the Lambda configuration at deployment time.
+
+The Function URL uses `AuthType: NONE` because an MCP client is not expected to sign AWS IAM requests. Application-level bearer authentication is mandatory for `/mcp`. `/health` contains no sensitive data.
 
 ## AWS resources
 
-`template.yaml` creates:
+### One-time bootstrap: `bootstrap.yaml`
 
-- Lambda: `bndy-remote-mcp`
+Creates and retains:
+
+- Secrets Manager secret `bndy/remote-mcp`
+- Lambda execution role `bndy-remote-mcp-execution-role`
+- GitHub OIDC deploy role `bndy-remote-mcp-github-deploy`
+
+### Application stack: `template.yaml`
+
+Creates:
+
+- Lambda `bndy-remote-mcp`
 - streaming Lambda Function URL (`RESPONSE_STREAM`)
-- Secrets Manager secret: `bndy/remote-mcp`
 
-Region: `eu-west-2` via CI/CD.
+Region: `eu-west-2`.
 
 ## Build and validation
 
@@ -58,26 +69,52 @@ Region: `eu-west-2` via CI/CD.
 cd remote
 npm install
 npm run check
+npm test
 npm run build
-sam validate -t template.yaml
+sam validate --lint -t template.yaml --region eu-west-2
+sam validate --lint -t bootstrap.yaml --region eu-west-2
 sam build -t template.yaml
 ```
 
+The integration test uses the real MCP v2 client library. It proves bearer rejection, protocol negotiation, discovery of exactly the five intended tools and a complete `search_venue` call delegated to a mocked BNDY API with the separate backend service credential.
+
+## One-time AWS bootstrap
+
+This is the only AWS operator step required before GitHub can deploy the service.
+
+From AWS CloudShell in account `771551874768`:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/flowency-live/bndy-MCP/main/remote/bootstrap.yaml \
+  -o /tmp/bndy-remote-mcp-bootstrap.yaml
+
+aws cloudformation deploy \
+  --template-file /tmp/bndy-remote-mcp-bootstrap.yaml \
+  --stack-name bndy-remote-mcp-bootstrap \
+  --region eu-west-2 \
+  --capabilities CAPABILITY_NAMED_IAM
+```
+
+The bootstrap assumes the account-level GitHub Actions OIDC provider for `token.actions.githubusercontent.com` already exists. Other Flowency workloads in this AWS account already use that provider.
+
+Do not retrieve or paste either secret during bootstrap.
+
 ## Deployment
 
-Pushes to `main` deploy through `.github/workflows/remote-mcp-ci.yml` using the same AWS credential secret names as the BNDY serverless API estate:
+After the bootstrap succeeds, either push a remote-MCP change to `main` or run **Remote MCP CI/CD** manually from GitHub Actions.
 
-- `AWS_ACCESS_KEY_ID`
-- `AWS_SECRET_ACCESS_KEY`
+The workflow:
 
-Stack: `bndy-remote-mcp`
+1. typechecks the service
+2. runs the real MCP client integration tests
+3. validates both CloudFormation/SAM templates
+4. assumes the BNDY MCP deployment role through GitHub OIDC
+5. builds and deploys stack `bndy-remote-mcp`
+6. verifies `GET /health`
+7. verifies unauthenticated `POST /mcp` returns `401`
+8. writes a sanitised deployment receipt to branch `remote-mcp-deploy-status`
 
-Deployment also smoke-tests:
-
-- `GET /health` returns configured/healthy
-- unauthenticated `POST /mcp` returns `401`
-
-The workflow summary prints the safe Function URL endpoint but never the bearer token.
+The receipt contains the safe Function URL and status only. It never contains either bearer token.
 
 ## Connecting ChatGPT
 
@@ -87,13 +124,13 @@ On ChatGPT Business web, create a custom MCP app in Developer Mode using:
 - Authentication: bearer token
 - Token: the `token` value stored in AWS Secrets Manager secret `bndy/remote-mcp`
 
-Retrieve/view that value only in an authenticated AWS operator session. Do not paste it into chat, source control, issues, or logs.
+Retrieve/view that value only in an authenticated AWS operator session. Do not paste it into chat, source control, issues or logs.
 
-Keep the app as a draft until search and controlled create tests pass. Business custom apps freeze their tool snapshot when published, so finish the initial tool surface before publishing.
+Keep the app as a draft until search and controlled create tests pass.
 
 ## Why venue creation does not call Google directly
 
-The production venue Lambda already owns venue identity. Its find-or-create path performs Google Places resolution when necessary, rejects non-building/locality results, checks Place ID/location/name/address matches, and enforces a hard Place ID uniqueness gate. The remote MCP delegates to that logic rather than duplicating it.
+The production venue Lambda already owns venue identity. Its find-or-create path performs Google Places resolution when necessary, rejects non-building/locality results, checks Place ID/location/name/address matches and enforces a hard Place ID uniqueness gate. The remote MCP delegates to that logic rather than duplicating it.
 
 ## Artist behaviour
 
