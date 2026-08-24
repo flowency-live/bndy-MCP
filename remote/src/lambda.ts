@@ -4,7 +4,7 @@ import remoteApp from './index.js';
 
 interface LambdaResponseStream extends NodeJS.WritableStream {
   write(chunk: Uint8Array | Buffer | string): boolean;
-  end(): void;
+  end(): this;
 }
 
 declare const awslambda: {
