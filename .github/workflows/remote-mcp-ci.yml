@@ -151,6 +151,26 @@ jobs:
             "${BASE_URL}mcp")
           test "$STATUS" = "401"
 
+      - name: Authenticated live MCP acceptance
+        id: live_mcp
+        if: steps.smoke.outcome == 'success'
+        continue-on-error: true
+        shell: bash
+        run: |
+          set -euo pipefail
+          SECRET_STRING=$(aws secretsmanager get-secret-value \
+            --secret-id bndy/remote-mcp \
+            --region "$AWS_REGION" \
+            --query SecretString \
+            --output text)
+          MCP_TOKEN=$(node -e 'const s=JSON.parse(process.argv[1]); process.stdout.write(s.token || "")' "$SECRET_STRING")
+          unset SECRET_STRING
+          test -n "$MCP_TOKEN"
+          echo "::add-mask::$MCP_TOKEN"
+
+          MCP_ENDPOINT="${BASE_URL}mcp" MCP_TOKEN="$MCP_TOKEN" npm run test:live
+          unset MCP_TOKEN
+
       - name: Record sanitised deployment status
         if: always()
         shell: bash
@@ -158,6 +178,7 @@ jobs:
           AWS_AUTH_OUTCOME: ${{ steps.aws_auth.outcome }}
           DEPLOY_OUTCOME: ${{ steps.sam_deploy.outcome }}
           SMOKE_OUTCOME: ${{ steps.smoke.outcome }}
+          LIVE_MCP_OUTCOME: ${{ steps.live_mcp.outcome }}
           SOURCE_SHA: ${{ github.sha }}
         run: |
           set -euo pipefail
@@ -179,9 +200,10 @@ jobs:
             --arg awsCredentials "$AWS_AUTH_OUTCOME" \
             --arg deployment "$DEPLOY_OUTCOME" \
             --arg smokeTest "$SMOKE_OUTCOME" \
+            --arg liveMcpTest "$LIVE_MCP_OUTCOME" \
             --arg mcpEndpoint "$MCP_ENDPOINT" \
             --arg healthEndpoint "$HEALTH_ENDPOINT" \
-            '{service:"bndy-remote-mcp",recordedAt:$recordedAt,sourceSha:$sourceSha,awsCredentials:$awsCredentials,deployment:$deployment,smokeTest:$smokeTest,mcpEndpoint:$mcpEndpoint,healthEndpoint:$healthEndpoint,clientTokenSecret:"bndy/remote-mcp",deploymentIdentity:"GitHub OIDC"}' \
+            '{service:"bndy-remote-mcp",recordedAt:$recordedAt,sourceSha:$sourceSha,awsCredentials:$awsCredentials,deployment:$deployment,smokeTest:$smokeTest,liveMcpTest:$liveMcpTest,mcpEndpoint:$mcpEndpoint,healthEndpoint:$healthEndpoint,clientTokenSecret:"bndy/remote-mcp",deploymentIdentity:"GitHub OIDC"}' \
             > /tmp/bndy-mcp-status/diagnostics/remote-mcp-deploy.json
 
           git config user.name 'bndy-bot'
@@ -203,7 +225,9 @@ jobs:
           AWS_AUTH_OUTCOME: ${{ steps.aws_auth.outcome }}
           DEPLOY_OUTCOME: ${{ steps.sam_deploy.outcome }}
           SMOKE_OUTCOME: ${{ steps.smoke.outcome }}
+          LIVE_MCP_OUTCOME: ${{ steps.live_mcp.outcome }}
         run: |
           test "$AWS_AUTH_OUTCOME" = "success"
           test "$DEPLOY_OUTCOME" = "success"
           test "$SMOKE_OUTCOME" = "success"
+          test "$LIVE_MCP_OUTCOME" = "success"
