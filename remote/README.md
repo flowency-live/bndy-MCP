@@ -101,7 +101,7 @@ Do not retrieve or paste either secret during bootstrap.
 
 ## Deployment
 
-After the bootstrap succeeds, either push a remote-MCP change to `main` or run **Remote MCP CI/CD** manually from GitHub Actions.
+After the bootstrap succeeds, either push a remote-MCP change to `main` or run **Remote MCP CI/CD** manually from GitHub Actions. Changes under `remote/**` intentionally trigger the deployment workflow, so documentation-only updates there can be used as a safe deployment trigger when required.
 
 The workflow:
 
