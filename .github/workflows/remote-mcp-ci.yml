@@ -1,6 +1,7 @@
 name: Remote MCP CI/CD
 
 on:
+  workflow_dispatch:
   pull_request:
     paths:
       - 'remote/**'
@@ -14,12 +15,14 @@ on:
 
 permissions:
   contents: write
+  id-token: write
 
 env:
   AWS_REGION: eu-west-2
   AWS_DEFAULT_REGION: eu-west-2
   NODE_VERSION: '22'
   SAM_CLI_TELEMETRY: '0'
+  AWS_DEPLOY_ROLE: arn:aws:iam::771551874768:role/bndy-remote-mcp-github-deploy
 
 jobs:
   check:
@@ -56,7 +59,10 @@ jobs:
         run: npm run build
 
       - name: Validate SAM template
-        run: sam validate -t template.yaml --region "$AWS_REGION"
+        run: sam validate --lint -t template.yaml --region "$AWS_REGION"
+
+      - name: Validate one-time OIDC bootstrap
+        run: sam validate --lint -t bootstrap.yaml --region "$AWS_REGION"
 
       - name: SAM build
         run: sam build -t template.yaml
@@ -65,7 +71,7 @@ jobs:
     name: Deploy remote MCP to AWS
     needs: check
     runs-on: ubuntu-latest
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    if: (github.event_name == 'push' && github.ref == 'refs/heads/main') || github.event_name == 'workflow_dispatch'
     defaults:
       run:
         working-directory: remote
@@ -84,13 +90,13 @@ jobs:
         with:
           use-installer: true
 
-      - name: Configure AWS credentials
+      - name: Configure AWS credentials through GitHub OIDC
         id: aws_auth
         continue-on-error: true
         uses: aws-actions/configure-aws-credentials@v4
         with:
-          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
-          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          role-to-assume: ${{ env.AWS_DEPLOY_ROLE }}
+          role-session-name: bndy-remote-mcp-${{ github.run_id }}
           aws-region: ${{ env.AWS_REGION }}
 
       - name: Install dependencies
@@ -113,7 +119,6 @@ jobs:
             --no-fail-on-empty-changeset \
             --stack-name bndy-remote-mcp \
             --region "$AWS_REGION" \
-            --capabilities CAPABILITY_IAM \
             --s3-bucket bndy-deployment-artifacts-1758805276 \
             --s3-prefix bndy-remote-mcp
 
@@ -175,7 +180,7 @@ jobs:
             --arg smokeTest "$SMOKE_OUTCOME" \
             --arg mcpEndpoint "$MCP_ENDPOINT" \
             --arg healthEndpoint "$HEALTH_ENDPOINT" \
-            '{service:"bndy-remote-mcp",recordedAt:$recordedAt,sourceSha:$sourceSha,awsCredentials:$awsCredentials,deployment:$deployment,smokeTest:$smokeTest,mcpEndpoint:$mcpEndpoint,healthEndpoint:$healthEndpoint,clientTokenSecret:"bndy/remote-mcp"}' \
+            '{service:"bndy-remote-mcp",recordedAt:$recordedAt,sourceSha:$sourceSha,awsCredentials:$awsCredentials,deployment:$deployment,smokeTest:$smokeTest,mcpEndpoint:$mcpEndpoint,healthEndpoint:$healthEndpoint,clientTokenSecret:"bndy/remote-mcp",deploymentIdentity:"GitHub OIDC"}' \
             > /tmp/bndy-mcp-status/diagnostics/remote-mcp-deploy.json
 
           git config user.name 'bndy-bot'
