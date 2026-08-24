@@ -1,21 +1,22 @@
 {
   "name": "@bndy/remote-mcp",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "private": true,
   "type": "module",
   "scripts": {
     "check": "tsc --noEmit",
-    "dev": "wrangler dev",
-    "deploy": "wrangler deploy",
-    "build:dry": "wrangler deploy --dry-run --outdir .wrangler-dist"
+    "build": "rm -rf dist && esbuild src/lambda.ts --bundle --platform=node --target=node22 --format=esm --outfile=dist/lambda.mjs",
+    "sam:validate": "sam validate --lint -t template.yaml",
+    "sam:build": "sam build -t template.yaml"
   },
   "dependencies": {
     "@modelcontextprotocol/server": "^2.0.0",
     "zod": "^4.0.0"
   },
   "devDependencies": {
-    "@types/node": "^20.0.0",
-    "typescript": "^5.9.3",
-    "wrangler": "^4.0.0"
+    "@types/aws-lambda": "^8.10.152",
+    "@types/node": "^22.0.0",
+    "esbuild": "^0.25.0",
+    "typescript": "^5.9.3"
   }
 }

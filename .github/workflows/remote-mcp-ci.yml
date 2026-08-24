@@ -1,4 +1,4 @@
-name: Remote MCP CI
+name: Remote MCP CI/CD
 
 on:
   pull_request:
@@ -15,8 +15,15 @@ on:
 permissions:
   contents: read
 
+env:
+  AWS_REGION: eu-west-2
+  AWS_DEFAULT_REGION: eu-west-2
+  NODE_VERSION: '22'
+  SAM_CLI_TELEMETRY: '0'
+
 jobs:
   check:
+    name: Validate remote MCP
     runs-on: ubuntu-latest
     defaults:
       run:
@@ -29,7 +36,12 @@ jobs:
       - name: Setup Node
         uses: actions/setup-node@v4
         with:
-          node-version: '20'
+          node-version: ${{ env.NODE_VERSION }}
+
+      - name: Setup SAM CLI
+        uses: aws-actions/setup-sam@v2
+        with:
+          use-installer: true
 
       - name: Install dependencies
         run: npm install
@@ -37,5 +49,94 @@ jobs:
       - name: Typecheck
         run: npm run check
 
-      - name: Wrangler dry build
-        run: npm run build:dry
+      - name: Bundle Lambda
+        run: npm run build
+
+      - name: Validate SAM template
+        run: sam validate -t template.yaml --region "$AWS_REGION"
+
+      - name: SAM build
+        run: sam build -t template.yaml
+
+  deploy:
+    name: Deploy remote MCP to AWS
+    needs: check
+    runs-on: ubuntu-latest
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    defaults:
+      run:
+        working-directory: remote
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+
+      - name: Setup SAM CLI
+        uses: aws-actions/setup-sam@v2
+        with:
+          use-installer: true
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Install dependencies
+        run: npm install
+
+      - name: Bundle Lambda
+        run: npm run build
+
+      - name: SAM build
+        run: sam build -t template.yaml
+
+      - name: SAM deploy
+        run: |
+          sam deploy \
+            --template-file .aws-sam/build/template.yaml \
+            --no-confirm-changeset \
+            --no-fail-on-empty-changeset \
+            --stack-name bndy-remote-mcp \
+            --region "$AWS_REGION" \
+            --capabilities CAPABILITY_IAM \
+            --s3-bucket bndy-deployment-artifacts-1758805276 \
+            --s3-prefix bndy-remote-mcp
+
+      - name: Smoke test deployment
+        shell: bash
+        run: |
+          set -euo pipefail
+          BASE_URL=$(aws cloudformation describe-stacks \
+            --stack-name bndy-remote-mcp \
+            --region "$AWS_REGION" \
+            --query "Stacks[0].Outputs[?OutputKey=='RemoteMcpFunctionUrl'].OutputValue | [0]" \
+            --output text)
+
+          test -n "$BASE_URL" && test "$BASE_URL" != "None"
+          echo "Remote MCP base URL: $BASE_URL"
+
+          curl -fsS "${BASE_URL}health" | tee /tmp/health.json
+          jq -e '.service == "bndy-remote-mcp" and .status == "ok"' /tmp/health.json >/dev/null
+
+          STATUS=$(curl -sS -o /tmp/unauthorized.json -w '%{http_code}' \
+            -X POST \
+            -H 'Content-Type: application/json' \
+            -H 'Accept: application/json, text/event-stream' \
+            --data '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"bndy-ci","version":"1.0.0"}}}' \
+            "${BASE_URL}mcp")
+          test "$STATUS" = "401"
+
+          {
+            echo '### BNDY remote MCP deployed'
+            echo
+            echo "- Health: ${BASE_URL}health"
+            echo "- MCP endpoint: ${BASE_URL}mcp"
+            echo '- Authentication: bearer token stored in AWS Secrets Manager secret `bndy/remote-mcp`'
+          } >> "$GITHUB_STEP_SUMMARY"
