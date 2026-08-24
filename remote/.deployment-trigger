@@ -1,0 +1,3 @@
+BNDY remote MCP deployment trigger.
+
+This file exists only so an intentional PR merge can safely trigger the remote MCP deployment workflow after infrastructure bootstrap or recovery.
