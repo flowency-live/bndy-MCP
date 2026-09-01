@@ -116,6 +116,20 @@ Create an event linking artist and venue.
 }
 ```
 
+### Read-only discovery: `discover_events`
+
+Grounded public discovery for Ask bndy and other MCP clients. It queries the canonical BNDY public events API and supports:
+
+- bounded date windows;
+- Artist, Venue, title and city text;
+- town or city;
+- ticketed or recorded non-ticketed events;
+- open-mic filtering;
+- distance from supplied coordinates;
+- bounded, sorted results with canonical BNDY event URLs.
+
+The tool is deliberately read-only. It returns `grounded: true` and `source: "canonical-bndy"`, excludes cancelled events and never generates a gig that is absent from the canonical API. Voice transcription and conversational intent extraction belong to the consuming Ask bndy experience, not this data tool.
+
 ## Example Usage
 
 In Claude Desktop:
