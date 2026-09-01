@@ -20,6 +20,7 @@ import { listVenues } from './tools/list-venues.js';
 import { editVenue } from './tools/edit-venue.js';
 import { editEvent } from './tools/edit-event.js';
 import { searchEvent } from './tools/search-event.js';
+import { discoverEvents } from './tools/discover-events.js';
 import { uploadEventPoster } from './tools/upload-event-poster.js';
 import { bulkImport } from './tools/bulk-import.js';
 import { getByExternalId } from './tools/get-by-external-id.js';
@@ -287,6 +288,56 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
           },
         },
         required: ['venueId', 'date', 'startTime'],
+      },
+    },
+    {
+      name: 'discover_events',
+      description: 'Read-only discovery of real canonical BNDY gigs. Use structured date, place, admission, open-mic and distance filters derived from the user request. Returns grounded BNDY event IDs and URLs only; it never invents events or writes data.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          startDate: {
+            type: 'string',
+            description: 'Inclusive start date in YYYY-MM-DD format. Defaults to today.',
+          },
+          endDate: {
+            type: 'string',
+            description: 'Inclusive end date in YYYY-MM-DD format. Defaults to 30 days after startDate; maximum window is 92 days.',
+          },
+          query: {
+            type: 'string',
+            description: 'Optional exact free-text fragment to match against event title, Artist name, Venue name or Venue city. Put dates and other understood constraints in their structured fields instead.',
+          },
+          city: {
+            type: 'string',
+            description: 'Optional Venue town or city fragment.',
+          },
+          ticketed: {
+            type: 'boolean',
+            description: 'true for ticketed gigs; false for gigs recorded as not ticketed/free or door-entry.',
+          },
+          openMic: {
+            type: 'boolean',
+            description: 'Filter explicitly identified open-mic sessions.',
+          },
+          latitude: {
+            type: 'number',
+            description: 'Search centre latitude. Must be supplied with longitude and radiusMiles.',
+          },
+          longitude: {
+            type: 'number',
+            description: 'Search centre longitude. Must be supplied with latitude and radiusMiles.',
+          },
+          radiusMiles: {
+            type: 'number',
+            description: 'Maximum distance from the supplied coordinates, greater than 0 and no more than 100 miles.',
+          },
+          limit: {
+            type: 'integer',
+            description: 'Maximum returned events. Defaults to 25 and is capped at 100.',
+          },
+        },
+        required: [],
       },
     },
     {
@@ -914,6 +965,17 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
             {
               type: 'text',
               text: eventDeleteResult,
+            },
+          ],
+        };
+
+      case 'discover_events':
+        const discoveryResult = await discoverEvents(args as any);
+        return {
+          content: [
+            {
+              type: 'text',
+              text: discoveryResult,
             },
           ],
         };
